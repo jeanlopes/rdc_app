@@ -2,8 +2,9 @@
 members = [
     "apps/mcp-server",
     "crates/runtime-core",
-    "crates/lldb-bridge",
+    "crates/win-debug-bridge",
     "crates/protocol",
+    "crates/debug-target-example",
 ]
 resolver = "2"
 
@@ -32,9 +33,7 @@ clap = { version = "4", features = ["derive"] }
 rmcp = { version = "0.1", features = ["server", "transport-io"] }
 # error handling
 anyhow = "1"
-# python interop (LLDB Python API)
-pyo3 = { version = "0.22", features = ["auto-initialize"] }
 # internal crates
 runtime-core = { path = "crates/runtime-core" }
-lldb-bridge = { path = "crates/lldb-bridge" }
+win-debug-bridge = { path = "crates/win-debug-bridge" }
 protocol = { path = "crates/protocol" }

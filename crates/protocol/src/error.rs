@@ -11,7 +11,7 @@ pub const ERR_EVAL: i32 = -32005;
 pub fn to_mcp_error_code(err: &DebuggerError) -> i32 {
     match err {
         DebuggerError::InvalidState { .. } => ERR_INVALID_STATE,
-        DebuggerError::LLDBError(_) => ERR_LLDB,
+        DebuggerError::DebuggerError(_) => ERR_LLDB,
         DebuggerError::BreakpointNotFound(_) => ERR_BREAKPOINT_NOT_FOUND,
         DebuggerError::ThreadNotFound(_) => ERR_THREAD_NOT_FOUND,
         DebuggerError::EvalError { .. } => ERR_EVAL,

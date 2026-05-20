@@ -1,0 +1,25 @@
+[package]
+name = "win-debug-bridge"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Windows Debug API integration — zero external dependencies, pure Rust"
+
+[dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+] }
+pdb = "0.8"
+tokio = { workspace = true, features = ["sync", "rt"] }
+tracing.workspace = true
+runtime-core.workspace = true
+protocol.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "debug-target-example"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Example binary for validating the RDC mcp-server against known breakpoints, panics, and structs"
+
+[[bin]]
+name = "debug-target-example"
+path = "src/main.rs"

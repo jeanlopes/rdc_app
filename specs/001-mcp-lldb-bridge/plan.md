@@ -1,71 +1,77 @@
-# Implementation Plan: Phase 1 — MCP + LLDB Bridge
+# Implementation Plan: Phase 1 — MCP + Windows Debug Bridge
 
 **Branch**: `001-mcp-lldb-bridge` | **Date**: 2026-05-20 | **Spec**: specs/001-mcp-lldb-bridge/
 
 **Input**: User description — Phase 1 of the RDC AI-native Runtime Intelligence Platform
 
+> **Revision note (2026-05-20)**: Original plan used PyO3 + LLDB Python API.
+> Replaced by Windows Debug API (`windows-rs` + `pdb` crate) per Constitution v2.0.0.
+> The `lldb-bridge` crate is being renamed and rewritten as `win-debug-bridge`.
+
 ## Summary
 
 Build the foundational AI↔debugger bridge: a Rust workspace providing an MCP server that exposes
-11 LLDB-backed tools (breakpoints, execution control, stack inspection, variable reading, expression
-evaluation) to AI agents. This phase establishes the three core crates (`lldb-bridge`,
-`runtime-core`, `protocol`) and the `mcp-server` app. LLDB is integrated via the Python API
-(PyO3) running in a dedicated thread; async bridging uses `tokio::sync::mpsc` command channels.
-The key innovation is the `probe!` macro and semantic variable annotation: the AI receives
-`{ "measure_layout.remaining_width": -12 }` instead of raw `{ "w": -12 }`.
+13 Windows Debug API-backed tools (breakpoints, execution control, stack inspection, variable
+reading, expression evaluation) to AI agents. All integration is expressed as Rust crate
+dependencies — zero external installation required beyond `rustup`.
+
+Three core crates: `win-debug-bridge` (Windows Debug API + PDB parsing), `runtime-core`
+(session entities, state machine, serialization), `protocol` (MCP types). One app: `mcp-server`.
+
+The key innovation is the `probe!` macro: the AI receives
+`{ "bubble_sort.pass": 2, "bubble_sort.swapped": true }` instead of `{ "x": 2, "flag": true }`.
 
 ## Technical Context
 
-**Language/Version**: Rust stable (MSRV 1.75; declare in workspace `Cargo.toml`)
+**Language/Version**: Rust stable (MSRV 1.75)
 
 **Primary Dependencies**:
-- `pyo3` + `pyo3-asyncio` — LLDB Python API embedding
-- `rmcp` — official Rust MCP SDK (server-side, stdio + HTTP/SSE transport)
+- `windows` 0.58 (`Win32_System_Diagnostics_Debug`, `Win32_System_Threading`, `Win32_System_Memory`, `Win32_Foundation`) — Windows Debug API
+- `pdb` 0.8 — pure-Rust PDB symbol file parser
 - `tokio` (full features) — async runtime
 - `serde` + `serde_json` — serialization
-- `tracing` + `tracing-subscriber` — structured logging (Constitution Principle VI)
+- `tracing` + `tracing-subscriber` — structured logging
 - `uuid` — session IDs
-- `thiserror` — ergonomic error types
+- `thiserror` — error types
+- `clap` — CLI
+- `anyhow` — app-level error handling
 
-**Storage**: N/A for Phase 1 (no trace persistence; that is Phase 4)
+**Removed from original plan**:
+- `pyo3` — Python interop (violated zero-install principle)
+- `rmcp` — MCP SDK (replaced by hand-rolled JSON-RPC 2.0 dispatch; revisit when stable)
 
-**Testing**: `cargo test --workspace`; integration tests require LLDB installed on CI runner
+**Storage**: N/A for Phase 1
 
-**Target Platform**: Linux (primary), macOS (secondary), Windows (best-effort)
+**Testing**: `cargo test --workspace`; integration test binary: `crates/debug-target-example`
 
-**Project Type**: Cargo workspace (multi-crate library + binary)
+**Target Platform**: Windows 10/11 x86-64 exclusively
 
 **Performance Goals**:
-- LLDB command round-trip (MCP tool call → LLDB response → MCP response): < 100ms p95
-- MCP server startup to ready: < 2s
-- `read_locals` with 50 variables at depth 4: < 50ms
+- Debug API event round-trip: < 50ms p95
+- `read_locals` with 20 variables: < 100ms
+- Server startup to ready: < 2s
 
 **Constraints**:
-- LLDB Python GIL MUST NOT block the Tokio executor thread
-- `unsafe` in `lldb-bridge` requires documented safety proof (Constitution Principle VI)
-- No persistent state across sessions in Phase 1; each `launch_process` is fresh
+- Windows Debug API MUST be called from the same OS thread that called `CreateProcess`
+- INT3 patching MUST save + restore original bytes atomically
+- `unsafe` in `win-debug-bridge` MUST carry three-condition proof (Constitution Principle VI)
+- `cargo build` on a clean Windows machine with Rust MUST succeed with no other prerequisites
 
-**Scale/Scope**: Single debug session per MCP server instance (MVP); multi-session support is
-Phase 2+
+**Scale/Scope**: Single debug session per `mcp-server` instance (MVP)
 
 ## Constitution Check
 
-*GATE: Must pass before Phase 0 research. Re-checked after Phase 1 design.*
-
 | Principle | Status | Notes |
 |-----------|--------|-------|
-| I. Runtime Intelligence, Not Tool Wrapping | ✅ PASS | Semantic probes + `probe!` macro elevate raw variables to structured meaning; AI observes execution state, not just values |
-| II. Crate-First Modularity | ✅ PASS | Three distinct crates (`lldb-bridge`, `runtime-core`, `protocol`) + one app (`mcp-server`); each independently testable |
-| III. MCP as the AI-Debugger Contract | ✅ PASS | Core deliverable of Phase 1; `autonomous-agent` → `mcp-server` → `lldb-bridge` is the enforced path |
-| IV. Deterministic Replay | ⚠️ DEFERRED | Phase 1 is request/response only; no event capture. Trace storage is Phase 4. No violation because no events are captured yet. |
-| V. Autonomous Agent Discipline | ⚠️ DEFERRED | Autonomous agent is Phase 5. Not applicable to Phase 1 tooling layer. |
-| VI. Rust Safety First | ✅ PASS | PyO3 Python API minimizes `unsafe`; Tokio is sole async runtime; all `unsafe` blocks will carry inline proof + GH issue |
-| VII. Open Platform Foundation | ✅ PASS | All `pub` API items in `crates/` will carry `///` doc comments with examples before merge |
+| I. Runtime Intelligence | ✅ PASS | Semantic probes elevate raw memory to structured meaning |
+| II. Crate-First Modularity | ✅ PASS | `win-debug-bridge`, `runtime-core`, `protocol` are distinct crates |
+| III. MCP as AI-Debugger Contract | ✅ PASS | Core deliverable; `mcp-server` is the sole integration point |
+| IV. Deterministic Replay | ⚠ DEFERRED | Phase 4 — no event capture yet; not a violation |
+| V. Autonomous Agent Discipline | ⚠ DEFERRED | Phase 5 — not applicable to bridge layer |
+| VI. Rust Safety First — No External Deps | ✅ PASS | `windows-rs` + `pdb` are Rust crates; zero external install |
+| VII. Open Platform Foundation | ✅ PASS | All `pub` APIs carry `///` docs |
 
-**Gate result**: PASS — Phase 0 research and Phase 1 design may proceed.
-
-*Post-design re-check*: ✅ All design artifacts (data-model.md, contracts/) align with crate
-boundaries and MCP contract requirements. No new violations.
+**Gate result**: PASS
 
 ## Project Structure
 
@@ -74,110 +80,93 @@ boundaries and MCP contract requirements. No new violations.
 ```text
 specs/001-mcp-lldb-bridge/
 ├── plan.md                              # This file
-├── research.md                          # Phase 0 decisions
+├── research.md                          # Windows Debug API decision
 ├── data-model.md                        # Entity definitions
-├── quickstart.md                        # Validation guide
+├── quickstart.md                        # Windows validation guide
 ├── contracts/
-│   ├── mcp-tools.md                     # 11 MCP tool schemas
+│   ├── mcp-tools.md                     # 13 MCP tool schemas
 │   └── variable-serialization.md        # Variable JSON format
-└── tasks.md                             # Generated by /speckit-tasks
+└── tasks.md                             # Task list
 ```
 
-### Source Code (repository root)
+### Source Code
 
 ```text
 Cargo.toml                               # workspace root
+
 apps/
 └── mcp-server/
-    ├── Cargo.toml
     └── src/
-        ├── main.rs                      # CLI entrypoint, transport setup
-        ├── server.rs                    # rmcp server registration
+        ├── main.rs                      # CLI, tracing, LLDBHandle spawn
+        ├── server.rs                    # JSON-RPC dispatch loop
         └── handlers/
-            ├── session.rs               # launch_process, get_session_state
-            ├── breakpoints.rs           # set/remove/list breakpoints
-            ├── execution.rs             # continue/pause/step tools
-            └── inspection.rs            # read_locals/stack/eval/threads
+            ├── session.rs
+            ├── breakpoints.rs
+            ├── execution.rs
+            └── inspection.rs
 
 crates/
-├── lldb-bridge/
-│   ├── Cargo.toml
+├── win-debug-bridge/                    # ← renamed from lldb-bridge
 │   └── src/
-│       ├── lib.rs                       # pub trait DebuggerBackend
-│       ├── python_backend.rs            # PyO3 LLDB Python API impl
-│       ├── thread.rs                    # LLDBCommand enum, mpsc channel setup
-│       └── types.rs                     # Raw LLDB type wrappers
-├── runtime-core/
-│   ├── Cargo.toml
-│   └── src/
-│       ├── lib.rs
-│       ├── session.rs                   # DebugSession, SessionState machine
-│       ├── process.rs                   # ProcessHandle, ThreadInfo
-│       ├── breakpoint.rs                # Breakpoint, BreakpointKind
-│       ├── variable.rs                  # Variable, VariableValue, SemanticAnnotation
-│       ├── probe.rs                     # probe! macro, SemanticProbe
-│       ├── serialization.rs             # Variable→JSON serializer with limits
-│       └── error.rs                     # DebuggerError
-└── protocol/
-    ├── Cargo.toml
-    └── src/
-        ├── lib.rs
-        ├── tools/
-        │   ├── session.rs               # LaunchInput, SessionStateOutput
-        │   ├── breakpoints.rs           # SetBreakpointInput, BreakpointOutput
-        │   ├── execution.rs             # StepInput, ExecutionEvent
-        │   └── inspection.rs            # ReadLocalsInput, VariableOutput
-        └── error.rs                     # protocol error mapping
+│       ├── lib.rs                       # DebuggerBackend trait
+│       ├── thread.rs                    # DebugCommand channel + WindowsDebugHandle
+│       └── windows_backend.rs          # Windows Debug API implementation
+│           ├── process mgmt            # CreateProcess, WaitForDebugEvent loop
+│           ├── breakpoints             # INT3 patch/restore
+│           ├── stepping                # EFLAGS.TF single-step
+│           ├── memory                  # ReadProcessMemory
+│           └── symbols                 # pdb crate integration
+├── runtime-core/                        # Unchanged
+├── protocol/                            # Unchanged
+└── debug-target-example/               # Bubble sort + panic test binary
 ```
 
-**Structure Decision**: Workspace with `crates/` libraries and `apps/` binaries per
-Constitution Principle II. `apps/mcp-server` depends on all three crates; crates do not depend
-on each other except `runtime-core` ← `lldb-bridge` (bridge implements `DebuggerBackend` trait
-defined in `runtime-core`).
+## Refactoring Plan (lldb-bridge → win-debug-bridge)
 
-## Complexity Tracking
+### What changes
 
-No constitution violations requiring justification.
+| Item | Before | After |
+|------|--------|-------|
+| Crate name | `lldb-bridge` | `win-debug-bridge` |
+| Implementation file | `python_backend.rs` (PyO3) | `windows_backend.rs` (windows-rs) |
+| Dependencies | `pyo3` | `windows`, `pdb` |
+| Backend struct | `PythonBackend` | `WindowsDebugBackend` |
+| Channel struct | `LLDBHandle` | `WindowsDebugHandle` |
 
----
+### What stays the same
 
-## Phase 0: Research (Complete)
+- `DebuggerBackend` trait (unchanged — this abstraction is working)
+- `DebugCommand` enum structure (renamed variants only)
+- `runtime-core` entities — all unchanged
+- `protocol` types — all unchanged
+- `mcp-server` handlers — import path update only
+- `apps/mcp-server/src/main.rs` — import path update only
 
-All decisions documented in `research.md`. Summary:
+### Migration steps
 
-| Decision | Choice |
-|----------|--------|
-| LLDB binding | PyO3 + Python API |
-| MCP SDK | `rmcp` crate |
-| Async bridge | Dedicated thread + mpsc |
-| Semantic probes | `probe!` declarative macro |
-| Variable serialization | Recursive + depth/size limits |
-
----
-
-## Phase 1: Design & Contracts (Complete)
-
-All design artifacts generated:
-
-- `data-model.md` — Entity definitions with Rust types and state machines
-- `contracts/mcp-tools.md` — 11 MCP tool schemas with input/output JSON
-- `contracts/variable-serialization.md` — Variable JSON format, semantic probe wire format
-- `quickstart.md` — Step-by-step validation guide with acceptance checklist
-
----
+1. Create `crates/win-debug-bridge/` with new `Cargo.toml`
+2. Copy `thread.rs` → update `LLDBHandle` → `WindowsDebugHandle`, `LLDBCommand` → `DebugCommand`
+3. Write `windows_backend.rs` implementing `DebuggerBackend` with Windows Debug API
+4. Update workspace `Cargo.toml` members + `apps/mcp-server/Cargo.toml` deps
+5. Delete `crates/lldb-bridge/`
+6. `cargo build --workspace` — verify zero errors
 
 ## Acceptance Criteria
 
-The AI MUST be able to, via MCP tools against a running Rust binary:
+Via MCP tools against `debug-target-example.exe` (bubble sort binary):
 
-1. **Open process**: `launch_process` → state `Running`
-2. **Set breakpoint**: `set_breakpoint` → `resolved: true`
-3. **Navigate execution**: `continue_execution` → `BreakpointHit`; `step_over/into/out` → `StepComplete`
-4. **Read variables**: `read_locals` → typed `Variable` list with correct values
-5. **Read semantic state**: `read_locals` with `probe_context` → qualified names `context.variable`
-6. **Identify panic**: `continue_execution` → `PanicDetected` event with panic message
-7. **Evaluate expressions**: `evaluate_expression` → computed value with type
-8. **List threads**: `list_threads` → all active threads with stop reasons
+1. `launch_process` → state `Running`, non-zero PID
+2. `set_breakpoint` at `bubble_sort` inner loop line → `resolved: true`
+3. `continue_execution` → `BreakpointHit` at that line
+4. `read_locals` → `pass`, `i`, `swapped`, `arr` with correct values
+5. `read_locals` with `probe_context: "bubble_sort"` → `bubble_sort.pass`, `bubble_sort.swapped`
+6. `step_over` → line advances by 1
+7. `step_into` `bubble_sort` from `main` → enters function
+8. `step_out` → returns to `main`
+9. `evaluate_expression` `arr[0]` → current value of first element
+10. `list_threads` → at least one thread
+11. `read_stack` → `bubble_sort` → `main`
+12. Panic mode: `continue_execution` → `PanicDetected { message: "index out of bounds..." }`
 
 ---
 

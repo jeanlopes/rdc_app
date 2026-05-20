@@ -1,4 +1,4 @@
-use lldb_bridge::thread::LLDBHandle;
+use win_debug_bridge::thread::WindowsDebugHandle as LLDBHandle;
 use protocol::tools::breakpoints::{
     BreakpointOutput, ListBreakpointsOutput, RemoveBreakpointInput, SetBreakpointInput,
 };

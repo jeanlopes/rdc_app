@@ -1,4 +1,4 @@
-use lldb_bridge::thread::LLDBHandle;
+use win_debug_bridge::thread::WindowsDebugHandle as LLDBHandle;
 use protocol::tools::session::{LaunchInput, LaunchOutput, SessionStateOutput};
 use runtime_core::error::DebuggerError;
 use runtime_core::session::DebugTarget;

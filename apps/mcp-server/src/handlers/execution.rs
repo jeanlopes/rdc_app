@@ -1,4 +1,4 @@
-use lldb_bridge::thread::{ExecutionEvent, LLDBHandle};
+use win_debug_bridge::thread::{ExecutionEvent, WindowsDebugHandle as LLDBHandle};
 use protocol::tools::execution::{ExecutionEventKind, StepInput};
 use runtime_core::error::DebuggerError;
 use tracing::{info, instrument, warn};
