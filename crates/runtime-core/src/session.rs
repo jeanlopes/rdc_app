@@ -6,8 +6,22 @@ use uuid::Uuid;
 use crate::error::DebuggerError;
 use crate::process::ProcessHandle;
 
+/// Unique identifier for a debug session.
 pub type SessionId = Uuid;
 
+/// Description of the binary and launch parameters for a debug session.
+///
+/// # Example
+/// ```
+/// use runtime_core::session::DebugTarget;
+/// use std::collections::HashMap;
+/// let target = DebugTarget {
+///     executable: "/usr/bin/my_app".into(),
+///     args: vec!["--flag".to_string()],
+///     env: HashMap::new(),
+///     working_dir: None,
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebugTarget {
     pub executable: PathBuf,
@@ -16,6 +30,7 @@ pub struct DebugTarget {
     pub working_dir: Option<PathBuf>,
 }
 
+/// Reason why the target process paused.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PauseReason {
     Breakpoint(u32),
@@ -26,6 +41,8 @@ pub enum PauseReason {
     Exception(String),
 }
 
+/// Lifecycle state of a debug session.
+/// Use [`DebugSession::transition`] to move between states.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SessionState {
     Idle,
@@ -51,6 +68,21 @@ impl std::fmt::Display for SessionState {
     }
 }
 
+/// Top-level container for a single debugging engagement.
+///
+/// # Example
+/// ```
+/// use runtime_core::session::{DebugSession, DebugTarget};
+/// use std::collections::HashMap;
+/// let target = DebugTarget {
+///     executable: "/usr/bin/my_app".into(),
+///     args: vec![],
+///     env: HashMap::new(),
+///     working_dir: None,
+/// };
+/// let session = DebugSession::new(target);
+/// assert!(matches!(session.state, runtime_core::session::SessionState::Idle));
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebugSession {
     pub id: SessionId,

@@ -4,6 +4,7 @@ members = [
     "crates/runtime-core",
     "crates/lldb-bridge",
     "crates/protocol",
+    "crates/debug-target-example",
 ]
 resolver = "2"
 

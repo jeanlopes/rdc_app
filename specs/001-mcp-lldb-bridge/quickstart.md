@@ -127,20 +127,40 @@ Input: {}
 
 ## Validation Checklist
 
-Run through these scenarios to verify Phase 1 acceptance criteria:
+Use `crates/debug-target-example` as the target binary.
+Build it first: `cargo build -p debug-target-example`
+
+```bash
+# layout mode — breakpoints + locals + step + probe
+./target/debug/mcp-server --executable ./target/debug/debug-target-example \
+  --args "layout" --log-level debug
+
+# panic mode — panic detection
+./target/debug/mcp-server --executable ./target/debug/debug-target-example \
+  --args "panic"
+```
+
+### Static verification (confirmed by build ✅)
+
+- [X] `mcp-server` binary builds and starts — `cargo build --workspace` succeeds
+- [X] `debug-target-example layout` runs and produces `overflow: remaining_width=-12`
+- [X] `debug-target-example panic` fires `index out of bounds` panic
+- [X] All 13 MCP tool handlers compile and wire to LLDB backend
+
+### Runtime validation (requires LLDB + MCP client — run manually)
 
 - [ ] `launch_process` starts the binary and returns state `Running`
-- [ ] `set_breakpoint` on a known line resolves with `resolved: true`
+- [ ] `set_breakpoint` on `debug-target-example/src/main.rs` line with `// BREAKPOINT` resolves with `resolved: true`
 - [ ] `continue_execution` stops at the breakpoint and returns `BreakpointHit`
-- [ ] `read_locals` returns variables with correct types and values
+- [ ] `read_locals` returns `current_x`, `remaining_width`, `overflow` with correct values
 - [ ] `step_over` advances by one source line
-- [ ] `step_into` descends into a function call
-- [ ] `step_out` returns to the call site
-- [ ] `evaluate_expression` evaluates `1 + 1` and returns `2`
+- [ ] `step_into` on `layout::layout_pass` descends into `layout::measure`
+- [ ] `step_out` returns to the call site in `layout_pass`
+- [ ] `evaluate_expression` evaluates `remaining_width + current_x` and returns `96`
 - [ ] `list_threads` shows at least one thread
-- [ ] `read_stack` shows the current call stack with source locations
-- [ ] Panic in target binary detected: `continue_execution` returns `PanicDetected` event
-- [ ] `probe_context` in `read_locals` returns qualified variable names (`context.variable`)
+- [ ] `read_stack` shows `layout::measure` → `layout::layout_pass` → `main`
+- [ ] Panic mode: `continue_execution` returns `PanicDetected` with "index out of bounds"
+- [ ] `read_locals` with `probe_context: "measure_layout"` returns `measure_layout.remaining_width: -12`
 
 ---
 

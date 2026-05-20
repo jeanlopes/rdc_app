@@ -1,6 +1,13 @@
-// T007 — implemented below
 use thiserror::Error;
 
+/// All errors that can originate from the debugger backend or session layer.
+///
+/// # Example
+/// ```
+/// use runtime_core::error::DebuggerError;
+/// let e = DebuggerError::ProcessNotFound;
+/// assert!(e.to_string().contains("process not found"));
+/// ```
 #[derive(Debug, Error)]
 pub enum DebuggerError {
     #[error("invalid state: current={current}, required={required}")]

@@ -1,8 +1,14 @@
-// T048 — stub (full recursive serializer implemented here)
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use crate::variable::{Variable, VariableValue, ScalarValue};
 
+/// Configures the recursive variable serializer.
+///
+/// # Example
+/// ```
+/// use runtime_core::serialization::SerializerOpts;
+/// let opts = SerializerOpts { max_depth: 4, max_array_elements: 64, max_string_bytes: 1024 };
+/// ```
 #[derive(Debug, Clone)]
 pub struct SerializerOpts {
     pub max_depth: u32,
@@ -20,6 +26,8 @@ impl Default for SerializerOpts {
     }
 }
 
+/// Converts `Variable` values to `serde_json::Value` with depth limiting,
+/// array truncation, string truncation, and cyclic reference detection.
 pub struct Serializer {
     opts: SerializerOpts,
 }
