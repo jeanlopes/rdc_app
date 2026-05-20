@@ -167,3 +167,16 @@ Via MCP tools against `debug-target-example.exe` (bubble sort binary):
 10. `list_threads` → at least one thread
 11. `read_stack` → `bubble_sort` → `main`
 12. Panic mode: `continue_execution` → `PanicDetected { message: "index out of bounds..." }`
+
+---
+
+## Roadmap Context (Future Phases)
+
+This plan covers Phase 1 only. Future feature branches:
+
+| Branch | Phase | Description |
+|--------|-------|-------------|
+| `002-runtime-event-stream` | Phase 2 | Streaming `RuntimeEvent` bus; live timeline; `event-stream` crate |
+| `003-egui-introspection` | Phase 3 | `UiSnapshot`, `WidgetNode` graph; `egui-introspection` crate |
+| `004-deterministic-replay` | Phase 4 | `RuntimeFrame`, `replay-engine`, `trace-storage` crates |
+| `005-autonomous-agent` | Phase 5 | Hypothesis engine, autonomous debug loops; `ai-planning` crate |
