@@ -12,8 +12,8 @@ use thiserror::Error;
 pub enum DebuggerError {
     #[error("invalid state: current={current}, required={required}")]
     InvalidState { current: String, required: &'static str },
-    #[error("lldb error: {0}")]
-    LLDBError(String),
+    #[error("debugger error: {0}")]
+    DebuggerError(String),
     #[error("process not found")]
     ProcessNotFound,
     #[error("breakpoint not found: {0}")]

@@ -1,177 +1,176 @@
-# Research: Phase 1 — MCP + LLDB Bridge
+# Research: Phase 1 — MCP + Windows Debug Bridge
 
 **Feature**: 001-mcp-lldb-bridge
-**Date**: 2026-05-20
+**Date**: 2026-05-20 (revised 2026-05-20 — LLDB approach replaced by Windows Debug API)
 
 ---
 
-## 1. LLDB Integration Strategy
+## 1. Debugger Integration Strategy
 
-### Decision: Python API via PyO3 (initial)
-
-**Rationale**:
-- LLDB ships its Python bindings (`lldb` Python module) on all major platforms as part of the
-  standard LLDB installation. No additional headers or compilation against LLDB sources required.
-- PyO3 provides safe, ergonomic Rust↔Python interop with well-maintained crate support.
-- Reduces `unsafe` surface area dramatically compared to direct C++ FFI, satisfying
-  Constitution Principle VI.
-- Sufficient performance for interactive debugging (round-trip < 100ms target is met; Python GIL
-  is held only during LLDB calls, not in the async path).
-
-**Alternatives considered**:
-- **LLDB C++ API via bindgen**: Maximum performance and no Python runtime dependency. Rejected
-  for Phase 1 because bindgen output requires platform-specific LLDB headers, generates large
-  `unsafe` surfaces, and significantly increases onboarding complexity. Viable for Phase 3+.
-- **lldb-rs crate (unmaintained)**: Provides Rust bindings but last updated 2020, does not cover
-  the full LLDB API surface needed. Rejected.
-- **DAP (Debug Adapter Protocol) over stdio**: Higher-level than needed; DAP does not expose
-  enough raw runtime state for semantic probes. Rejected.
-
-**Migration path**: The `lldb-bridge` crate interface will be designed as a pure Rust trait
-(`DebuggerBackend`), so the PyO3 implementation can be swapped for a C++ bindgen implementation
-without changing callers.
-
----
-
-## 2. MCP Protocol SDK
-
-### Decision: `rmcp` crate (official Rust MCP SDK)
+### Decision: Windows Debug API via `windows-rs` crate
 
 **Rationale**:
-- `rmcp` is the official Rust SDK for the Model Context Protocol, maintained by the MCP
-  organization. It provides server-side tool registration, JSON-RPC 2.0 message handling, and
-  stdio/HTTP transport out of the box.
-- Using an official SDK guarantees spec compliance and reduces protocol implementation risk.
-- The crate supports `async` tool handlers natively (Tokio-based), aligning with
-  Constitution Principle VI.
+The platform targets Windows exclusively. The Windows Debug API is a native OS capability
+available on every Windows 10/11 machine — no installation required beyond a working Rust
+toolchain. All integration is expressed as Rust crate dependencies in `Cargo.toml`.
 
-**Alternatives considered**:
-- **Manual JSON-RPC 2.0 implementation**: Full control but significant boilerplate, risk of
-  spec drift. Rejected in favor of `rmcp`; revisit if `rmcp` proves unstable.
-- **jsonrpc crate**: Protocol-level only, does not handle MCP tool/resource abstractions.
-  Rejected as too low-level.
+The previous approach (PyO3 + LLDB Python API) was rejected because:
+- Required LLVM installed separately on the machine
+- Required Python 3.x installed separately
+- Required matching Python/LLDB versions
+- Was a Linux-native design ported badly to Windows
+- Violated Constitution Principle VI (no external runtime dependencies)
 
-**Fallback**: If `rmcp` API surface is insufficient or unstable at implementation time, implement
-`crates/protocol` as a thin JSON-RPC 2.0 layer over `tokio-tungstenite` (HTTP/SSE) or `tokio`
-stdio. The `crates/protocol` abstraction boundary isolates this decision from callers.
-
----
-
-## 3. Async Bridging: LLDB (Synchronous) + Tokio (Async)
-
-### Decision: Dedicated OS thread + `tokio::sync::mpsc` command channel
-
-**Rationale**:
-LLDB Python API is synchronous and GIL-bound. Calling it directly from an async Tokio task would
-block the executor thread. The correct pattern is:
+**How it works**:
 
 ```
-┌─────────────────────────────┐
-│  Tokio runtime               │
-│  ┌──────────────────────┐   │
-│  │  MCP tool handler    │   │
-│  │  (async fn)          │   │
-│  │  sends LLDBCommand   │──────────────────┐
-│  │  via mpsc::Sender    │   │              │
-│  └──────────────────────┘   │              ▼
-│                              │   ┌────────────────────┐
-│                              │   │  LLDB Thread        │
-│                              │   │  (std::thread::spawn│
-│                              │   │  + Python GIL)      │
-│                              │   │  executes command   │
-│                              │   │  sends result via   │
-│                              │   │  oneshot::Sender    │
-└─────────────────────────────┘   └────────────────────┘
+CreateProcess(exe, DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS)
+        ↓
+WaitForDebugEvent(DEBUG_EVENT, timeout_ms)   ← event loop on dedicated OS thread
+        ↓ match event.dwDebugEventCode
+  EXCEPTION_DEBUG_EVENT
+    ├── EXCEPTION_BREAKPOINT (0x80000003)    ← INT3 hit
+    ├── EXCEPTION_SINGLE_STEP (0x80000004)   ← after TF step
+    └── other codes                          ← panics, access violations
+  EXIT_PROCESS_DEBUG_EVENT                   ← process terminated
+  CREATE_PROCESS_DEBUG_EVENT                 ← process started
+        ↓
+ContinueDebugEvent(pid, tid, DBG_CONTINUE | DBG_EXCEPTION_NOT_HANDLED)
 ```
 
-- `LLDBCommand` enum: one variant per debugger operation
-- Each command carries a `tokio::sync::oneshot::Sender<LLDBResult>` for the reply
-- LLDB thread loops on `mpsc::Receiver<LLDBCommand>`, executes synchronously, sends result back
-- Tokio tasks `await` on the `oneshot::Receiver`
+**Setting breakpoints**:
+1. `ReadProcessMemory` — save the original byte at target address
+2. `WriteProcessMemory` — write `0xCC` (INT3 opcode)
+3. On hit: restore original byte, set `EIP/RIP -= 1`, optionally re-arm
+
+**Single-step (step over / step into)**:
+1. `GetThreadContext` — read `CONTEXT.EFlags`
+2. Set `EFLAGS.TF = 1` (Trap Flag)
+3. `SetThreadContext` — apply
+4. `ContinueDebugEvent` → next instruction raises `EXCEPTION_SINGLE_STEP`
+
+**Step out** (return to caller):
+- Set a temporary breakpoint at the return address found in the stack frame
+
+**Variable reading**:
+- `ReadProcessMemory(process, var_address, buffer, size)` — raw bytes
+- PDB tells us: address (or register + offset), type size, type name
+- Combine both to produce a typed `Variable`
+
+**Crate dependencies**:
+```toml
+windows = { version = "0.58", features = [
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+pdb = "0.8"
+```
 
 **Alternatives considered**:
-- `tokio::task::spawn_blocking`: Simpler but spins up a new thread per call, causing GIL
-  contention and Python interpreter re-acquisition overhead. Rejected.
-- Async LLDB wrapper (none exist): No production-quality async LLDB crate exists. Rejected.
+- **PyO3 + LLDB Python API**: Requires LLDB + Python installed. Rejected — violates zero-install
+  principle. Was the original (wrong) approach in this branch.
+- **DbgHelp.dll + SymFromAddr**: Works but requires `dbghelp.dll` loaded and is higher-level.
+  Can be used for stack walking alongside the debug API. Not excluded, but `pdb` crate is
+  preferred for symbol resolution to stay in pure-Rust territory.
+- **WinDbg via subprocess**: Requires WinDbg installed. Rejected — same issue as LLDB.
+- **DAP (Debug Adapter Protocol) over subprocess**: Higher-level than needed; requires an
+  external DA server. Rejected.
+
+---
+
+## 2. Symbol Resolution
+
+### Decision: `pdb` crate (parse `.pdb` files directly)
+
+**Rationale**:
+Rust on Windows compiles with debug information in `.pdb` format (Program Database). The `pdb`
+crate parses these files in pure Rust, providing:
+- Source file + line number from instruction pointer (address → `PdbAddressMap`)
+- Function names from public/global symbols
+- Local variable names, types, and locations (register-relative or absolute address)
+
+**Flow**:
+```
+1. On CreateProcess: find <exe_name>.pdb next to the .exe
+2. pdb::PDB::open(pdb_file)
+3. On each debug event: look up current RIP in PDB address map → SourceLocation
+4. On read_locals: enumerate locals for current function → name + location
+5. ReadProcessMemory(location.address) → raw bytes → deserialize to VariableValue
+```
+
+**Limitation**: PDB variable type info (`S_LOCAL`, `S_DEFRANGE_REGISTER`) can be complex to
+parse fully for deeply nested Rust types. Initial implementation returns scalar types and
+opaque summaries for complex structs. Full type reconstruction is a Phase 2+ enhancement.
+
+---
+
+## 3. Async Bridging
+
+### Decision: Same pattern as before — dedicated OS thread + `tokio::sync::mpsc`
+
+**Rationale**:
+Windows Debug API calls (`WaitForDebugEvent`, `WriteProcessMemory`, etc.) are synchronous and
+MUST be called from the same thread that called `CreateProcess` with `DEBUG_PROCESS`. The
+dedicated-thread + mpsc channel pattern is mandatory, not optional.
+
+```
+Tokio async handler  →  WindowsDebugHandle (mpsc::Sender<DebugCommand>)
+                                  ↓
+                     Windows debug OS thread (std::thread::spawn)
+                     WaitForDebugEvent loop
+                                  ↓
+                     WindowsDebugBackend (pure-Rust Windows API calls)
+```
+
+No changes to the channel architecture from the previous design.
 
 ---
 
 ## 4. Semantic Probes
 
-### Decision: Declarative `probe!` macro emitting `SemanticVariable` records
+### Decision: Unchanged — `probe!` macro + `ProbeRegistry`
 
-**Rationale**:
-Raw variable inspection returns opaque values (`{ "x": 88 }`). A semantic probe attaches a named
-context to a group of related variables, enabling the AI to reason about meaning rather than raw
-state:
-
-```rust
-probe!("measure_layout", remaining_width, current_x, overflow);
-// Emits: { "measure_layout.remaining_width": -12, "measure_layout.current_x": 88,
-//          "measure_layout.overflow": true }
-```
-
-Implementation: A `macro_rules!` macro in `crates/runtime-core` that wraps the `read_locals`
-LLDB call, applies a namespace prefix to matching variable names, and serializes to
-`Vec<SemanticVariable>`. The MCP `read_locals` tool accepts an optional `probe_context` argument
-to trigger semantic annotation.
-
-**Alternatives considered**:
-- **Post-hoc renaming in AI agent**: Requires the agent to know variable naming conventions per
-  codebase. Not scalable; rejected.
-- **Proc macro with type information**: More powerful but requires compile-time integration with
-  the target binary. Deferred to Phase 2 (Runtime Semantics Layer).
+The `probe!` macro, `ProbeRegistry`, and `SemanticAnnotation` types are defined in
+`crates/runtime-core` and are independent of the debugger backend. No changes needed.
 
 ---
 
-## 5. Session State Management
+## 5. Variable Serialization
 
-### Decision: Explicit state machine in `runtime-core` with typed transitions
+### Decision: Unchanged — `Serializer` in `runtime-core`
 
-State enum and transitions (see `data-model.md` for full specification):
-
-```
-Idle → Launching → Running ⇆ Paused → Terminated
-                    ↓                      ↑
-                  Error ──────────────────┘
-```
-
-Illegal transitions (e.g., `step_over` from `Running`) return a typed `DebuggerError::InvalidState`
-rather than panicking. The state machine is protected by a `tokio::sync::Mutex<SessionState>`.
+The recursive serializer with depth limits, cyclic ref detection, and truncation is backend-
+agnostic. No changes needed.
 
 ---
 
-## 6. Variable Serialization
+## 6. MCP Protocol
 
-### Decision: Recursive serialization with depth limit and cyclic reference detection
+### Decision: Unchanged — JSON-RPC 2.0 dispatch loop in `apps/mcp-server`
 
-- Max depth: configurable, default 8 levels
-- Cyclic refs: detected via address-based visited set; replaced with `{ "$ref": "<addr>" }`
-- Large arrays: truncated at configurable limit (default 256 elements) with
-  `{ "$truncated": true, "total": N }` metadata
-- Large strings: truncated at 4096 bytes with `{ "$truncated": true }` marker
-
-See `contracts/variable-serialization.md` for the full schema.
+The MCP server, all handlers, and all protocol types are backend-agnostic. No changes needed.
 
 ---
 
 ## 7. Platform Target
 
-- **Windows**: Primary and only supported target.
-  LLDB available via LLVM for Windows (`winget install LLVM.LLVM`).
-  Python 3.x required separately (`winget install Python.Python.3`).
-  Python path configured via `.cargo/config.toml` → `PYO3_PYTHON`.
+- **Windows 10/11 x86-64**: Only supported target.
+  Windows Debug API is available on all Windows versions since XP.
+  PDB format is stable and supported by the Rust MSVC and GNU toolchains on Windows.
+  No installation required beyond `rustup` and the MSVC or GNU toolchain.
 
 ---
 
 ## Summary Table
 
-| Decision | Choice | Key Reason |
+| Decision | Choice | Reason |
 |---|---|---|
-| LLDB binding | PyO3 + Python API | Minimal unsafe, ships with LLDB |
-| MCP SDK | `rmcp` crate | Official SDK, async-native |
-| Async bridge | Dedicated thread + mpsc | GIL safety, no blocking executor |
-| Semantic probes | `probe!` macro | AI-consumable structured context |
-| Session state | Explicit state machine | Typed transitions, no illegal ops |
-| Variable serialization | Recursive + depth limit | Handles cyclic refs, large objects |
-| Target platform | Windows | Only supported target |
+| Debugger integration | Windows Debug API (`windows-rs`) | Zero install, Windows-native |
+| Symbol resolution | `pdb` crate | Pure Rust, no external tools |
+| Async bridge | Dedicated thread + mpsc | Windows debug thread affinity requirement |
+| Semantic probes | `probe!` macro (unchanged) | Backend-agnostic |
+| Variable serialization | `Serializer` (unchanged) | Backend-agnostic |
+| Platform | Windows 10/11 only | Project target |

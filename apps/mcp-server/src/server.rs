@@ -1,5 +1,5 @@
 use anyhow::Result;
-use lldb_bridge::thread::LLDBHandle;
+use win_debug_bridge::thread::WindowsDebugHandle as LLDBHandle;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
