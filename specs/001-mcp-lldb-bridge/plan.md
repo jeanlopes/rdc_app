@@ -31,7 +31,7 @@ The key innovation is the `probe!` macro and semantic variable annotation: the A
 
 **Testing**: `cargo test --workspace`; integration tests require LLDB installed on CI runner
 
-**Target Platform**: Linux (primary), macOS (secondary), Windows (best-effort)
+**Target Platform**: Windows
 
 **Project Type**: Cargo workspace (multi-crate library + binary)
 

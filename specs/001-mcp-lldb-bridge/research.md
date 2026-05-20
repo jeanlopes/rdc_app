@@ -155,12 +155,12 @@ See `contracts/variable-serialization.md` for the full schema.
 
 ---
 
-## 7. Platform Targets
+## 7. Platform Target
 
-- **Linux**: Primary. LLDB available via `lldb-18` package; Python 3.x bundled. Full support.
-- **macOS**: Secondary. LLDB ships with Xcode command-line tools. Full support.
-- **Windows**: Best-effort. LLDB on Windows is less mature; Python API support varies.
-  Phase 1 does not guarantee Windows compatibility.
+- **Windows**: Primary and only supported target.
+  LLDB available via LLVM for Windows (`winget install LLVM.LLVM`).
+  Python 3.x required separately (`winget install Python.Python.3`).
+  Python path configured via `.cargo/config.toml` → `PYO3_PYTHON`.
 
 ---
 
@@ -174,4 +174,4 @@ See `contracts/variable-serialization.md` for the full schema.
 | Semantic probes | `probe!` macro | AI-consumable structured context |
 | Session state | Explicit state machine | Typed transitions, no illegal ops |
 | Variable serialization | Recursive + depth limit | Handles cyclic refs, large objects |
-| Primary platform | Linux | Best LLDB support |
+| Target platform | Windows | Only supported target |

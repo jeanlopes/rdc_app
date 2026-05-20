@@ -145,7 +145,7 @@ depend on stable, documented contracts. Undocumented or silent breakage destroys
     ai-planning/        # hypothesis formulation and planning
     protocol/           # MCP protocol types and codec
   ```
-- **Target platforms**: Linux (primary), macOS (secondary), Windows (best-effort)
+- **Target platform**: Windows (primary and only supported target)
 - **Observability**: All crates processing runtime events MUST emit structured log events via the
   `tracing` crate. Silent failure is FORBIDDEN.
 
