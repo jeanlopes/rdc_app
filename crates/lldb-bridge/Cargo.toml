@@ -1,0 +1,15 @@
+[package]
+name = "lldb-bridge"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "LLDB integration via PyO3 Python API — dedicated thread bridge"
+
+[dependencies]
+pyo3.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+tracing.workspace = true
+runtime-core.workspace = true
+protocol.workspace = true
+thiserror.workspace = true
