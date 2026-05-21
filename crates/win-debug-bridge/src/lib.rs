@@ -29,5 +29,6 @@
 //! # });
 //! ```
 
+pub mod pdb_info;
 pub mod thread;
 pub mod windows_backend;
