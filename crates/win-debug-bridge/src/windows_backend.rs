@@ -14,9 +14,11 @@ use tracing::{info, instrument, warn};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Diagnostics::Debug::{
     ContinueDebugEvent, DebugBreakProcess, GetThreadContext, ReadProcessMemory,
-    SetThreadContext, WaitForDebugEvent, WriteProcessMemory,
-    CONTEXT, CONTEXT_FLAGS, DEBUG_EVENT, EXCEPTION_DEBUG_EVENT, EXIT_PROCESS_DEBUG_EVENT,
-    CREATE_PROCESS_DEBUG_EVENT,
+    SetThreadContext, StackWalk64, SymFunctionTableAccess64, SymGetModuleBase64,
+    SymInitialize, WaitForDebugEvent, WriteProcessMemory,
+    ADDRESS64, ADDRESS_MODE, CONTEXT, CONTEXT_FLAGS, DEBUG_EVENT,
+    EXCEPTION_DEBUG_EVENT, EXIT_PROCESS_DEBUG_EVENT, CREATE_PROCESS_DEBUG_EVENT,
+    STACKFRAME64,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32, TH32CS_SNAPTHREAD,
@@ -158,8 +160,19 @@ impl WindowsDebugBackend {
         *self.exe_path.lock().unwrap() = Some(exe.clone());
         *self.state.lock().unwrap() = SessionState::Running;
 
-        // Drain initial events and capture image base, then load PDB.
+        // Drain initial events and capture image base.
         let image_base = self.drain_initial_events(pid)?;
+
+        // Initialise DbgHelp for this process — required by StackWalk64.
+        // fInvadeProcess=true auto-loads symbols for all loaded modules.
+        // SAFETY: SymInitialize must be called once per process handle before StackWalk64.
+        // GitHub issue: #1 — Safe alternative: none.
+        let process_handle = self.require_process()?;
+        unsafe {
+            let _ = SymInitialize(process_handle, None, true);
+        }
+
+        // Load PDB for source-level symbol resolution.
         match PdbInfo::load(&exe, image_base) {
             Ok(pdb_info) => {
                 info!("PDB loaded successfully");
@@ -305,27 +318,84 @@ impl WindowsDebugBackend {
         Ok(result)
     }
 
-    pub fn read_stack(&self, _thread_id: Option<ThreadId>, max_frames: u32) -> Result<Vec<StackFrame>, DebuggerError> {
-        let rip = self.get_rip()?;
+    pub fn read_stack(&self, thread_id: Option<ThreadId>, max_frames: u32) -> Result<Vec<StackFrame>, DebuggerError> {
+        use windows::Win32::System::Threading::{OpenThread, THREAD_GET_CONTEXT, THREAD_SUSPEND_RESUME};
+
+        let tid = thread_id
+            .map(|id| id as u32)
+            .unwrap_or_else(|| *self.stopped_tid.lock().unwrap());
+
+        if tid == 0 {
+            return Ok(vec![]);
+        }
+
+        let process = self.require_process()?;
+        let mut ctx = self.get_thread_context(tid)?;
+
+        // SAFETY: OpenThread for context reading. Thread is halted at a debug event.
+        // GitHub issue: #1 — Safe alternative: none.
+        let thread_handle = unsafe {
+            OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, false, tid)
+                .map_err(|e| DebuggerError::DebuggerError(format!("OpenThread(stack): {}", e)))?
+        };
+
+        // AMD64 flat mode = 3
+        let flat = ADDRESS_MODE(3);
+        let mut frame = STACKFRAME64 {
+            AddrPC:    ADDRESS64 { Offset: ctx.Rip, Segment: 0, Mode: flat },
+            AddrStack: ADDRESS64 { Offset: ctx.Rsp, Segment: 0, Mode: flat },
+            AddrFrame: ADDRESS64 { Offset: ctx.Rbp, Segment: 0, Mode: flat },
+            ..Default::default()
+        };
+
+        const IMAGE_FILE_MACHINE_AMD64: u32 = 0x8664;
+
+        let mut frames = Vec::new();
         let pdb_guard = self.pdb.lock().unwrap();
 
-        let (function_name, source_location) = if let Some(pdb) = pdb_guard.as_ref() {
-            (pdb.va_to_function_name(rip), pdb.va_to_source(rip))
-        } else {
-            (None, None)
-        };
+        for _ in 0..max_frames.min(64) {
+            // SAFETY: StackWalk64 must be called from a loop. ctx is updated each iteration.
+            // process and thread_handle are valid open handles.
+            // SymFunctionTableAccess64 / SymGetModuleBase64 are DbgHelp callbacks
+            // that require a prior SymInitialize (called in launch_process).
+            // GitHub issue: #1 — Safe alternative: none.
+            let ok = unsafe {
+                StackWalk64(
+                    IMAGE_FILE_MACHINE_AMD64,
+                    process,
+                    thread_handle,
+                    &mut frame,
+                    &mut ctx as *mut CONTEXT as *mut _,
+                    None,
+                    Some(sym_func_table_access),
+                    Some(sym_get_module_base),
+                    None,
+                )
+            };
 
-        let frame0 = StackFrame {
-            index: 0,
-            function_name,
-            module: None,
-            source_location,
-            is_inlined: false,
-        };
+            if !ok.as_bool() || frame.AddrPC.Offset == 0 {
+                break;
+            }
 
-        // Phase 1: single frame. Full stack walking (StackWalk64) is next PR.
-        let _ = max_frames;
-        Ok(vec![frame0])
+            let rip = frame.AddrPC.Offset;
+            let (function_name, source_location) = if let Some(pdb) = pdb_guard.as_ref() {
+                (pdb.va_to_function_name(rip), pdb.va_to_source(rip))
+            } else {
+                (None, None)
+            };
+
+            frames.push(StackFrame {
+                index: frames.len() as u32,
+                function_name,
+                module: None,
+                source_location,
+                is_inlined: false,
+            });
+        }
+
+        // SAFETY: CloseHandle releases the thread handle. GitHub issue: #1.
+        unsafe { CloseHandle(thread_handle).ok(); }
+        Ok(frames)
     }
 
     pub fn evaluate_expression(
@@ -813,6 +883,22 @@ impl Drop for WindowsDebugBackend {
         if let Some(h) = *self.process.lock().unwrap() { unsafe { CloseHandle(h).ok(); } }
         if let Some(h) = *self.stderr_read.lock().unwrap() { unsafe { CloseHandle(h).ok(); } }
     }
+}
+
+// ── StackWalk64 callback wrappers ────────────────────────────────────────────
+// windows-rs exposes SymFunctionTableAccess64 / SymGetModuleBase64 as generic
+// `unsafe fn` items. StackWalk64 expects `unsafe extern "system" fn` pointers,
+// so we wrap them here with the correct ABI.
+
+unsafe extern "system" fn sym_func_table_access(
+    h: HANDLE,
+    base: u64,
+) -> *mut core::ffi::c_void {
+    SymFunctionTableAccess64(h, base)
+}
+
+unsafe extern "system" fn sym_get_module_base(h: HANDLE, addr: u64) -> u64 {
+    SymGetModuleBase64(h, addr)
 }
 
 // ── Free helpers ──────────────────────────────────────────────────────────────
