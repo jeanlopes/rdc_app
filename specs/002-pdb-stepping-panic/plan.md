@@ -35,7 +35,7 @@ All code lives in `crates/win-debug-bridge`. No other crates are modified.
 
 **Storage**: N/A
 
-**Testing**: `cargo build --workspace`; manual validation against `debug-target-example.exe`
+**Testing**: `cargo test --workspace` for unit tests; `cargo test --workspace -- --ignored` for integration tests requiring a built binary
 
 **Target Platform**: Windows 10/11 x86-64
 
@@ -106,6 +106,184 @@ All design artifacts generated:
 - `research.md` — seven technical decisions with rationale and alternatives
 - `data-model.md` — `PdbInfo`, `PdbLocal`, `VarLocation`, extended `WindowsDebugBackend`
 - No new contracts (existing contracts fulfilled, schemas unchanged)
+
+## Test Coverage
+
+### Strategy
+
+Tests are split into two tiers:
+
+- **Unit tests** — `#[test]`, no Windows infrastructure, no file I/O. Run with
+  `cargo test --workspace`. These cover all pure logic: state machines, serializers,
+  free functions, and pre-built data structures.
+- **Integration tests** — `#[test] #[ignore]`, require `debug-target-example.exe`
+  and its `.pdb` to exist. Run with `cargo test --workspace -- --ignored`. These
+  verify real PDB parsing against a known binary.
+
+---
+
+### crates/runtime-core — Phase 1 coverage
+
+#### `src/error.rs`
+
+| Test | Assertion |
+|------|-----------|
+| `error_process_not_found_display` | `DebuggerError::ProcessNotFound.to_string()` contains "process not found" |
+| `error_breakpoint_not_found_display` | `BreakpointNotFound(5).to_string()` contains "5" |
+| `error_invalid_state_display` | `InvalidState { current: "Running", required: "Paused" }.to_string()` contains both values |
+
+#### `src/session.rs` — state machine
+
+| Test | Assertion |
+|------|-----------|
+| `session_new_starts_idle` | `DebugSession::new(target).state == SessionState::Idle` |
+| `transition_idle_to_launching` | `session.transition(Launching)` → Ok |
+| `transition_idle_to_running_fails` | `session.transition(Running)` → Err(InvalidState) |
+| `transition_running_to_paused` | Ok |
+| `transition_paused_to_running` | Ok |
+| `transition_paused_to_stepping` | Ok |
+| `transition_stepping_to_paused` | Ok |
+| `transition_terminated_is_terminal` | `session.transition(Running)` after Terminated → Err |
+| `full_session_lifecycle` | Idle→Launching→Running→Paused→Running→Terminated all Ok |
+
+#### `src/breakpoint.rs`
+
+| Test | Assertion |
+|------|-----------|
+| `breakpoint_hit_count_increments` | `bp.increment_hit_count()` → `bp.hit_count == 1` |
+| `breakpoint_toggle_enabled` | false→true→false |
+
+#### `src/probe.rs`
+
+| Test | Assertion |
+|------|-----------|
+| `probe_registry_register_lookup` | `register("ctx", ["a","b"])` then `lookup("ctx")` == `["a","b"]` |
+| `probe_registry_unknown_context` | `lookup("missing")` == None |
+| `probe_macro_returns_context_and_vars` | `probe!("ctx", x, y)` returns `("ctx", ["x","y"])` |
+
+#### `src/serialization.rs`
+
+| Test | Assertion |
+|------|-----------|
+| `serialize_bool_true` | `Scalar(Bool(true))` → json `true` |
+| `serialize_bool_false` | `Scalar(Bool(false))` → json `false` |
+| `serialize_int` | `Scalar(Int(-12))` → json `-12` |
+| `serialize_string_within_limit` | value < limit → no `$truncated` |
+| `serialize_string_over_limit` | value > limit → `$truncated: true`, `total_bytes` set |
+| `serialize_array_within_limit` | len ≤ max → no `$truncated` |
+| `serialize_array_over_limit` | len > max → `$truncated: true`, `shown` and `total` set |
+| `serialize_depth_limit` | struct nested > max_depth → `$depth_limit: true` |
+| `serialize_cyclic_ref` | same address visited twice → `$ref: "0x..."` |
+| `serialize_null_pointer` | `Pointer { address: 0 }` → `null: true` |
+
+---
+
+### crates/protocol — Phase 1 coverage
+
+#### `src/error.rs`
+
+| Test | Assertion |
+|------|-----------|
+| `invalid_state_maps_to_minus_32001` | `to_mcp_error_code(InvalidState{..})` == `-32001` |
+| `breakpoint_not_found_maps_to_minus_32003` | `to_mcp_error_code(BreakpointNotFound(1))` == `-32003` |
+| `thread_not_found_maps_to_minus_32004` | `to_mcp_error_code(ThreadNotFound(1))` == `-32004` |
+| `generic_error_maps_to_minus_32000` | `to_mcp_error_code(ProcessNotFound)` == `-32000` |
+
+---
+
+### crates/win-debug-bridge — Phase 2 coverage
+
+#### `src/pdb_info.rs` — free functions (no PDB file)
+
+| Test | Assertion |
+|------|-----------|
+| `short_name_strips_hash` | `short_name("bubble_sort::h1a2b3c4d")` == `"bubble_sort"` |
+| `short_name_takes_last_segment` | `short_name("std::vec::Vec::push")` == `"push"` |
+| `short_name_simple` | `short_name("main")` == `"main"` |
+| `primitive_size_bool` | `primitive_size_from_type_name("bool")` == 1 |
+| `primitive_size_i32` | `primitive_size_from_type_name("i32")` == 4 |
+| `primitive_size_usize` | `primitive_size_from_type_name("usize")` == 8 |
+| `primitive_size_unknown` | `primitive_size_from_type_name("MyStruct")` == 0 |
+
+#### `src/pdb_info.rs` — PdbInfo math methods
+
+| Test | Assertion |
+|------|-----------|
+| `rva_to_va_adds_base` | `PdbInfo { image_base: 0x140000000 }.rva_to_va(0x1234)` == `0x140001234` |
+| `va_to_rva_subtracts_base` | `.va_to_rva(0x140001234)` == `Some(0x1234)` |
+| `va_to_rva_underflow` | `.va_to_rva(0x100)` with base `0x140000000` == `None` |
+
+#### `src/pdb_info.rs` — PdbInfo lookups with synthetic data
+
+Build a `PdbInfo` directly (bypassing PDB loading) and test query methods:
+
+| Test | Assertion |
+|------|-----------|
+| `va_to_source_exact_hit` | RVA in map → returns matching `SourceLocation` |
+| `va_to_source_nearest` | RVA + 50 bytes (within 256) → returns nearest entry |
+| `va_to_source_too_far` | RVA + 300 bytes → None |
+| `va_to_function_name_found` | Address inside function range → name returned |
+| `va_to_function_name_not_found` | Address before first function → None |
+
+#### `src/windows_backend.rs` — `bytes_to_value` (free function, no Win32)
+
+| Test | Bytes | Type | Expected |
+|------|-------|------|----------|
+| `bytes_bool_false` | `[0x00]` | "bool" | `Scalar(Bool(false))` |
+| `bytes_bool_true` | `[0x01]` | "bool" | `Scalar(Bool(true))` |
+| `bytes_i32_positive` | `[0x2c,0x00,0x00,0x00]` | "i32" | `Scalar(Int(44))` |
+| `bytes_i32_negative` | `[0xff,0xff,0xff,0xff]` | "i32" | `Scalar(Int(-1))` |
+| `bytes_u32` | `[0x05,0x00,0x00,0x00]` | "u32" | `Scalar(UInt(5))` |
+| `bytes_usize` | `[0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00]` | "usize" | `Scalar(UInt(8))` |
+| `bytes_f32` | IEEE-754 bytes for 1.0f32 | "f32" | `Scalar(Float(1.0))` |
+| `bytes_unknown_type` | any | "SomeStruct" | `Opaque { summary: contains "bytes" }` |
+
+#### `src/windows_backend.rs` — `extract_panic_message` (free function, no Win32)
+
+| Test | Input | Expected |
+|------|-------|----------|
+| `panic_new_format` | `"thread 'main' panicked at src\\main.rs:58:22:\nindex out of bounds: the len is 3 but the index is 99\n"` | `Some("index out of bounds: the len is 3 but the index is 99")` |
+| `panic_old_format` | `"thread 'main' panicked at 'index out of bounds: ...', src\\main.rs:58:22\n"` | `Some("index out of bounds: ...")` |
+| `panic_empty_string` | `""` | `None` |
+| `panic_no_panic_text` | `"some other stderr output\n"` | `None` (or Some with fallback) |
+| `panic_unwrap_none` | new-format output for `unwrap()` | `Some` containing "called \`Option::unwrap()\`" |
+
+---
+
+### Integration tests — require `debug-target-example.pdb`
+
+These tests are `#[ignore]` by default. Run with:
+```powershell
+cargo build -p debug-target-example
+cargo test -p win-debug-bridge -- --ignored
+```
+
+| Test | Assertion |
+|------|-----------|
+| `pdb_load_succeeds` | `PdbInfo::load("target/debug/debug-target-example.exe", base)` → Ok |
+| `pdb_source_to_va_bubble_sort_line` | `source_to_va("main.rs", BP_LINE)` → Some(non-zero va) |
+| `pdb_va_to_source_round_trip` | `va_to_source(source_to_va("main.rs", L).unwrap())` → file contains "main", line == L |
+| `pdb_function_lookup_bubble_sort` | `function_name_to_va("bubble_sort")` → Some |
+| `pdb_locals_at_bubble_sort` | `locals_at_va(bubble_sort_va)` → list contains entry with name "pass" |
+
+---
+
+### How to run
+
+```powershell
+# Unit tests only (no binary required)
+cargo test --workspace
+
+# Unit + integration tests
+cargo build -p debug-target-example
+cargo test --workspace -- --ignored
+
+# Single crate
+cargo test -p runtime-core
+cargo test -p win-debug-bridge
+```
+
+---
 
 ## Acceptance Criteria
 
