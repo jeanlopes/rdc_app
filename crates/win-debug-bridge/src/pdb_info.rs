@@ -282,3 +282,6 @@ fn primitive_size_from_type_name(name: &str) -> usize {
         _ => 0,
     }
 }
+
+#[cfg(test)]
+mod tests {}
