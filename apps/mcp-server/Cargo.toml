@@ -1,0 +1,24 @@
+[package]
+name = "mcp-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "RDC MCP server — AI gateway to the LLDB debugger"
+
+[[bin]]
+name = "mcp-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+uuid.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+runtime-core.workspace = true
+win-debug-bridge.workspace = true
+protocol.workspace = true

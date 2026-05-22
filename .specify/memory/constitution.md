@@ -1,22 +1,33 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: [unset] → 1.0.0
-Modified principles: N/A (initial ratification — all principles are new)
-Added sections:
-  - Core Principles (7 principles)
-  - Technology Stack & Architecture Constraints
-  - Development Workflow
-  - Governance
-Removed sections: N/A (initial ratification)
+Version change: 1.0.0 → 2.0.0 (MAJOR)
+Rationale for MAJOR bump: backward-incompatible removal of the entire LLDB/Python/PyO3
+debugger integration in favor of the Windows Debug API. The external dependency on LLDB
+and Python is eliminated; the `lldb-bridge` crate is replaced by `win-debug-bridge`.
+
+Modified principles:
+  - I. Runtime Intelligence: rationale updated (LLDB CLI removed as reference comparator)
+  - III. MCP as the AI-Debugger Contract: crate reference lldb-bridge → win-debug-bridge
+  - VI. Rust Safety First: extended to explicitly cover Windows API unsafe blocks
+
+Modified sections:
+  - Technology Stack & Architecture Constraints: complete rewrite
+    * Removed: LLDB, PyO3, Python dependency
+    * Added: Windows Debug API (windows-rs crate), PDB symbol parsing (pdb crate)
+    * Renamed crate: lldb-bridge → win-debug-bridge
+
+Added sections: none
+Removed sections: none
+
 Templates requiring updates:
-  - .specify/templates/plan-template.md  ✅ aligned (Constitution Check section present; gates derive from principles)
-  - .specify/templates/spec-template.md  ✅ aligned (no constitution-specific mandatory sections absent)
-  - .specify/templates/tasks-template.md ✅ aligned (task phases map to crate-first and test-first principles)
-  - .specify/templates/commands/         ⚠ pending — no command files found at path; validate when populated
-  - README.md                            ⚠ pending — no root README.md found; create to document platform vision
+  - .specify/templates/plan-template.md  ✅ aligned
+  - .specify/templates/spec-template.md  ✅ aligned
+  - .specify/templates/tasks-template.md ✅ aligned
+  - README.md                            ⚠ pending — update debugger integration section
+
 Follow-up TODOs:
-  - TODO(ROOT_README): Create /README.md at project root documenting platform vision and pointing to this constitution
+  - TODO(README): Update README.md debugger section to remove LLDB/Python references
   - TODO(MAINTAINERS): Define initial maintainer list for governance amendment approval
 -->
 
@@ -32,9 +43,9 @@ program state, correlate runtime behavior with source code, formulate falsifiabl
 execute hypothesis-test loops autonomously. Passive observation is insufficient; the system MUST
 reason and act.
 
-**Rationale**: A mere debugger wrapper is replaceable by existing tools (LLDB CLI, VS Code). The
-platform's value is autonomous reasoning over runtime state — that is the non-negotiable
-differentiator.
+**Rationale**: A mere debugger wrapper is replaceable by existing tools (VS Code debugger,
+WinDbg). The platform's value is autonomous reasoning over runtime state — that is the
+non-negotiable differentiator.
 
 ### II. Crate-First Modularity (NON-NEGOTIABLE)
 
@@ -56,11 +67,12 @@ embedding of individual crates into third-party tooling without pulling in the e
 
 All communication between AI agents and the debugger runtime MUST transit the MCP protocol layer
 (`apps/mcp-server`, `crates/protocol`). Direct in-process coupling between `autonomous-agent` and
-`lldb-bridge` or `runtime-core` is FORBIDDEN. The protocol boundary MUST be the single integration
-point for all AI-to-debugger interactions.
+`win-debug-bridge` or `runtime-core` is FORBIDDEN. The protocol boundary MUST be the single
+integration point for all AI-to-debugger interactions.
 
-**Rationale**: Decouples AI reasoning from debugger internals. Enables agent replacement, protocol
-versioning, and multi-agent topologies without modifying the runtime core.
+**Rationale**: Decouples AI reasoning from debugger internals. Enables backend replacement
+(e.g., swapping `win-debug-bridge` for a future remote-debug backend), protocol versioning, and
+multi-agent topologies without modifying the runtime core.
 
 ### IV. Deterministic Replay
 
@@ -89,21 +101,25 @@ The agent MUST NOT emit a debugging conclusion without supporting execution evid
 **Rationale**: Unbounded or unverifiable AI reasoning erodes user trust. Grounding every conclusion
 in observable runtime evidence makes the agent auditable and its behavior improvable over time.
 
-### VI. Rust Safety First
+### VI. Rust Safety First — No External Runtime Dependencies
 
-All production code MUST be written in Rust (stable toolchain). `unsafe` blocks are FORBIDDEN
-unless all three conditions are met:
+All production code MUST be written in Rust (stable toolchain). The debugger integration MUST use
+only Rust crates — no external runtimes, no system-installed tools, no language interpreters.
+`unsafe` blocks are FORBIDDEN unless all three conditions are met:
 1. An inline comment provides a complete safety proof at the `unsafe` block
 2. A GitHub issue tracks the unsafe usage with a link in the comment
 3. A safe alternative was considered and rejected with a written rationale in the same comment
 
-Async code MUST use Tokio as the sole async runtime. No competing runtimes (async-std, smol) may
-be introduced. The MSRV (Minimum Supported Rust Version) MUST be declared in `workspace.package`
-in the root `Cargo.toml` and updated deliberately via a PR.
+`unsafe` is expected and accepted in `crates/win-debug-bridge` for Windows API calls
+(`ReadProcessMemory`, `WriteProcessMemory`, `CreateProcess`, etc.) — each call site MUST carry
+the three-condition proof above.
 
-**Rationale**: Rust's safety guarantees prevent classes of runtime bugs that would undermine the
-platform's role as a trusted runtime observer. Allowing ad-hoc unsafe use or runtime mixing
-removes those guarantees.
+Async code MUST use Tokio as the sole async runtime. No competing runtimes (async-std, smol) may
+be introduced. The MSRV MUST be declared in `workspace.package` in the root `Cargo.toml`.
+
+**Rationale**: Requiring an external Python installation or LLDB binaries creates invisible
+deployment failures. Pure-Rust crate dependencies declared in `Cargo.toml` are the only
+acceptable integration boundary — `cargo build` is the entire setup story.
 
 ### VII. Open Platform Foundation
 
@@ -119,33 +135,37 @@ depend on stable, documented contracts. Undocumented or silent breakage destroys
 ## Technology Stack & Architecture Constraints
 
 - **Primary language**: Rust (stable toolchain; MSRV declared in workspace `Cargo.toml`)
+- **Target platform**: Windows 10/11 (x86-64). No Linux or macOS support is planned or claimed.
 - **UI framework**: egui via `crates/egui-introspection` and `apps/desktop-ui`
-- **Debugger integration**: LLDB via `crates/lldb-bridge` (no GDB coupling in initial releases)
+- **Debugger integration**: Windows Debug API via the `windows` crate (`windows-rs`).
+  No LLDB, no GDB, no external debugger binary required.
+  Symbol resolution via the `pdb` crate (parses `.pdb` files produced by the Rust toolchain).
 - **AI protocol**: MCP (Model Context Protocol) via `crates/protocol` and `apps/mcp-server`
 - **Async runtime**: Tokio only — no mixing with async-std or smol
 - **Serialization**: `serde` with `serde_json` or `postcard` for wire formats; no ad-hoc
   serialization logic outside of `crates/protocol`
+- **External dependencies policy**: ZERO runtime dependencies outside of Rust crates.
+  `cargo build` on a fresh Windows machine with Rust installed MUST produce a working binary.
 - **Workspace layout** (authoritative):
   ```
   apps/
-    desktop-ui/         # egui desktop application
-    mcp-server/         # MCP protocol server
-    replay-engine/      # deterministic trace replay
-    autonomous-agent/   # AI-driven debug orchestrator
+    desktop-ui/           # egui desktop application
+    mcp-server/           # MCP protocol server
+    replay-engine/        # deterministic trace replay
+    autonomous-agent/     # AI-driven debug orchestrator
 
   crates/
-    runtime-core/       # core runtime abstractions
-    lldb-bridge/        # LLDB FFI integration
-    event-stream/       # runtime event capture and dispatch
-    semantic-runtime/   # semantic graph over runtime state
-    egui-introspection/ # UI introspection widgets
-    replay-core/        # replay primitives and execution engine
-    trace-storage/      # trace persistence and querying
-    test-automation/    # automated test execution harness
-    ai-planning/        # hypothesis formulation and planning
-    protocol/           # MCP protocol types and codec
+    runtime-core/         # core abstractions: session, entities, state machine
+    win-debug-bridge/     # Windows Debug API integration (windows-rs + pdb)
+    event-stream/         # runtime event capture and dispatch
+    semantic-runtime/     # semantic graph over runtime state
+    egui-introspection/   # UI introspection widgets
+    replay-core/          # replay primitives and execution engine
+    trace-storage/        # trace persistence and querying
+    test-automation/      # automated test execution harness
+    ai-planning/          # hypothesis formulation and planning
+    protocol/             # MCP protocol types and codec
   ```
-- **Target platforms**: Linux (primary), macOS (secondary), Windows (best-effort)
 - **Observability**: All crates processing runtime events MUST emit structured log events via the
   `tracing` crate. Silent failure is FORBIDDEN.
 
@@ -165,6 +185,8 @@ depend on stable, documented contracts. Undocumented or silent breakage destroys
   Non-compliant plans MUST NOT advance to task generation.
 - **Observability gate**: Any PR adding a new runtime-event-handling code path that lacks
   `tracing` instrumentation MUST be rejected at review.
+- **Zero-install gate**: Any PR that introduces a dependency on a system-installed tool, runtime,
+  or interpreter MUST be rejected. All dependencies MUST be expressible in `Cargo.toml`.
 
 ## Governance
 
@@ -177,7 +199,7 @@ Amendments MUST follow this procedure:
 5. Update `Last Amended` to the date of the merge commit
 
 **Versioning policy**:
-- MAJOR: Removal or backward-incompatible redefinition of a Core Principle
+- MAJOR: Removal or backward-incompatible redefinition of a Core Principle or Technology Stack
 - MINOR: New principle or section added, or materially expanded guidance
 - PATCH: Clarifications, wording fixes, non-semantic refinements
 
@@ -189,4 +211,4 @@ an approved exception documented in this Governance section.
 truth for project governance. In any conflict between this document and other guidance files, this
 constitution prevails.
 
-**Version**: 1.0.0 | **Ratified**: 2026-05-20 | **Last Amended**: 2026-05-20
+**Version**: 2.0.0 | **Ratified**: 2026-05-20 | **Last Amended**: 2026-05-20
