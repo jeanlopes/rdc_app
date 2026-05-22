@@ -36,4 +36,9 @@ mod tests {
     fn error_process_not_found_display() {
         assert!(DebuggerError::ProcessNotFound.to_string().contains("process not found"));
     }
+
+    #[test]
+    fn error_breakpoint_not_found_display() {
+        assert!(DebuggerError::BreakpointNotFound(5).to_string().contains("5"));
+    }
 }
