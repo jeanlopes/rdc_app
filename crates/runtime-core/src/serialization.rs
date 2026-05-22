@@ -152,6 +152,12 @@ mod tests {
     }
 
     #[test]
+    fn serialize_bool_false() {
+        let v = ser().serialize_variable(&make_var("x", VariableValue::Scalar(ScalarValue::Bool(false))));
+        assert_eq!(v["value"], false);
+    }
+
+    #[test]
     fn serialize_int_negative() {
         let v = ser().serialize_variable(&make_var("x", VariableValue::Scalar(ScalarValue::Int(-12))));
         assert_eq!(v["value"], -12);
