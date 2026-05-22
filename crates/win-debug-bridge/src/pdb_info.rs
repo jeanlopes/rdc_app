@@ -47,6 +47,14 @@ impl PdbInfo {
     /// Load and index a PDB file located next to `exe_path`.
     pub fn load(exe_path: &Path, image_base: u64) -> Result<Self, DebuggerError> {
         let pdb_path = exe_path.with_extension("pdb");
+        // Rust on Windows names .pdb with underscores even when the binary uses hyphens.
+        let pdb_path = if !pdb_path.exists() {
+            let stem = exe_path.file_stem().unwrap_or_default().to_string_lossy().replace('-', "_");
+            let alt = exe_path.with_file_name(format!("{}.pdb", stem));
+            if alt.exists() { alt } else { pdb_path }
+        } else {
+            pdb_path
+        };
         if !pdb_path.exists() {
             return Err(DebuggerError::DebuggerError(format!(
                 "PDB not found at {}. Compile with `cargo build` (not --release).",
@@ -147,7 +155,34 @@ impl PdbInfo {
                     let mut current_locals: Vec<PdbLocal> = Vec::new();
                     let mut pending_name: Option<(String, String)> = None; // (name, type_name)
 
+                    // S_DEFRANGE_FRAMEPOINTER_REL / _FULL_SCOPE symbol kinds —
+                    // pdb 0.8 does not parse these, so we read the offset from raw bytes.
+                    const S_DEFRANGE_FRAMEPOINTER_REL: u16 = 0x1142;
+                    const S_DEFRANGE_FRAMEPOINTER_REL_FULL_SCOPE: u16 = 0x1144;
+
                     while let Ok(Some(sym)) = symbols.next() {
+                        let raw_kind = sym.raw_kind();
+                        // Handle S_DEFRANGE_* before parse() — pdb 0.8 returns Error for these.
+                        if raw_kind == S_DEFRANGE_FRAMEPOINTER_REL
+                            || raw_kind == S_DEFRANGE_FRAMEPOINTER_REL_FULL_SCOPE
+                        {
+                            if let Some((name, type_name)) = pending_name.take() {
+                                // Bytes layout: [kind: u16][offset: i32][...]
+                                let raw = sym.raw_bytes();
+                                if raw.len() >= 6 {
+                                    let offset = i32::from_le_bytes([raw[2], raw[3], raw[4], raw[5]]);
+                                    let sz = primitive_size_from_type_name(&type_name);
+                                    current_locals.push(PdbLocal {
+                                        name,
+                                        type_name,
+                                        location: VarLocation::FramePointerRelative(offset),
+                                        size: sz,
+                                    });
+                                }
+                            }
+                            continue;
+                        }
+
                         match sym.parse() {
                             Ok(SymbolData::Procedure(proc)) => {
                                 // Save previous procedure's locals
@@ -157,6 +192,14 @@ impl PdbInfo {
                                     }
                                 }
                                 current_proc_rva = proc.offset.to_rva(&address_map).map(|r| r.0);
+                                // Index private functions not captured by global_symbols()
+                                if let Some(rva) = current_proc_rva {
+                                    let full_name = proc.name.to_string().into_owned();
+                                    let short = short_name(&full_name);
+                                    info.function_starts.push((rva, full_name.clone()));
+                                    info.name_to_rva.entry(full_name).or_insert(rva);
+                                    info.name_to_rva.entry(short).or_insert(rva);
+                                }
                                 current_locals.clear();
                                 pending_name = None;
                             }
@@ -166,17 +209,21 @@ impl PdbInfo {
                                 pending_name = Some((name, type_name));
                             }
                             Ok(SymbolData::RegisterRelative(reg)) => {
-                                if let Some((name, type_name)) = pending_name.take() {
-                                    let sz = primitive_size_from_type_name(&type_name);
-                                    current_locals.push(PdbLocal {
-                                        name,
-                                        type_name,
-                                        location: VarLocation::FramePointerRelative(reg.offset),
-                                        size: sz,
-                                    });
-                                }
+                                // S_REGREL32 (old format): name is in the record itself.
+                                let name = reg.name.to_string().into_owned();
+                                let type_name = format!("type_{}", reg.type_index.0);
+                                let sz = primitive_size_from_type_name(&type_name);
+                                current_locals.push(PdbLocal {
+                                    name,
+                                    type_name,
+                                    location: VarLocation::FramePointerRelative(reg.offset),
+                                    size: sz,
+                                });
+                                pending_name = None;
                             }
                             _ => {
+                                // Clear pending_name only on non-defrange unrecognised symbols.
+                                // Defrange records are handled before parse() above.
                                 pending_name = None;
                             }
                         }
@@ -191,6 +238,10 @@ impl PdbInfo {
                 }
             }
         }
+
+        // Re-sort after module procedure symbols were added
+        info.function_starts.sort_by_key(|f| f.0);
+        info.function_starts.dedup_by_key(|f| f.0);
 
         tracing::info!(
             functions = info.function_starts.len(),

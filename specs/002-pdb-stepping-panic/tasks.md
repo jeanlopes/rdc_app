@@ -37,15 +37,15 @@ crates/win-debug-bridge/tests/integration.rs  ← new file for #[ignore] tests
 
 **Purpose**: Add `#[cfg(test)]` module stubs and create the integration test file.
 
-- [ ] T001 Add `#[cfg(test)] mod tests {}` block to `crates/runtime-core/src/error.rs` (if absent)
-- [ ] T002 [P] Add `#[cfg(test)] mod tests {}` block to `crates/runtime-core/src/session.rs` (if absent)
-- [ ] T003 [P] Add `#[cfg(test)] mod tests {}` block to `crates/runtime-core/src/breakpoint.rs` (if absent)
-- [ ] T004 [P] Add `#[cfg(test)] mod tests {}` block to `crates/runtime-core/src/probe.rs` (if absent)
-- [ ] T005 [P] Add `#[cfg(test)] mod tests {}` block to `crates/runtime-core/src/serialization.rs` (if absent)
-- [ ] T006 [P] Add `#[cfg(test)] mod tests {}` block to `crates/protocol/src/error.rs` (if absent)
-- [ ] T007 [P] Add `#[cfg(test)] mod tests {}` block to `crates/win-debug-bridge/src/pdb_info.rs` (if absent)
-- [ ] T008 [P] Add `#[cfg(test)] mod tests {}` block to `crates/win-debug-bridge/src/windows_backend.rs` (if absent)
-- [ ] T009 Create `crates/win-debug-bridge/tests/integration.rs` with a top-level comment and a placeholder `#[test] #[ignore] fn placeholder() {}` — `crates/win-debug-bridge/tests/integration.rs`
+- [X] T001 Add `#[cfg(test)] mod tests {}` block to `crates/runtime-core/src/error.rs` (if absent)
+- [X] T002 [P] Add `#[cfg(test)] mod tests {}` block to `crates/runtime-core/src/session.rs` (if absent)
+- [X] T003 [P] Add `#[cfg(test)] mod tests {}` block to `crates/runtime-core/src/breakpoint.rs` (if absent)
+- [X] T004 [P] Add `#[cfg(test)] mod tests {}` block to `crates/runtime-core/src/probe.rs` (if absent)
+- [X] T005 [P] Add `#[cfg(test)] mod tests {}` block to `crates/runtime-core/src/serialization.rs` (if absent)
+- [X] T006 [P] Add `#[cfg(test)] mod tests {}` block to `crates/protocol/src/error.rs` (if absent)
+- [X] T007 [P] Add `#[cfg(test)] mod tests {}` block to `crates/win-debug-bridge/src/pdb_info.rs` (if absent)
+- [X] T008 [P] Add `#[cfg(test)] mod tests {}` block to `crates/win-debug-bridge/src/windows_backend.rs` (if absent)
+- [X] T009 Create `crates/win-debug-bridge/tests/integration.rs` with a top-level comment and a placeholder `#[test] #[ignore] fn placeholder() {}` — `crates/win-debug-bridge/tests/integration.rs`
 
 **Checkpoint**: `cargo test --workspace` runs with no compilation errors (even if 0 tests).
 
@@ -56,13 +56,13 @@ crates/win-debug-bridge/tests/integration.rs  ← new file for #[ignore] tests
 **Purpose**: Core error type tests needed by all user stories' test assertions.
 These tests are in `crates/runtime-core/src/error.rs` and `crates/protocol/src/error.rs`.
 
-- [ ] T010 Write `error_process_not_found_display` — assert `DebuggerError::ProcessNotFound.to_string()` contains "process not found" — `crates/runtime-core/src/error.rs`
-- [ ] T011 [P] Write `error_breakpoint_not_found_display` — assert `BreakpointNotFound(5).to_string()` contains "5" — `crates/runtime-core/src/error.rs`
-- [ ] T012 [P] Write `error_invalid_state_display` — assert `InvalidState { current: "Running".to_string(), required: "Paused" }.to_string()` contains "Running" and "Paused" — `crates/runtime-core/src/error.rs`
-- [ ] T013 Write `invalid_state_maps_to_minus_32001` — assert `to_mcp_error_code(&DebuggerError::InvalidState { current: "".to_string(), required: "" })` == `-32001` — `crates/protocol/src/error.rs`
-- [ ] T014 [P] Write `breakpoint_not_found_maps_to_minus_32003` — `to_mcp_error_code(&BreakpointNotFound(1))` == `-32003` — `crates/protocol/src/error.rs`
-- [ ] T015 [P] Write `thread_not_found_maps_to_minus_32004` — `to_mcp_error_code(&ThreadNotFound(1))` == `-32004` — `crates/protocol/src/error.rs`
-- [ ] T016 [P] Write `generic_error_maps_to_minus_32000` — `to_mcp_error_code(&ProcessNotFound)` == `-32000` — `crates/protocol/src/error.rs`
+- [X] T010 Write `error_process_not_found_display` — assert `DebuggerError::ProcessNotFound.to_string()` contains "process not found" — `crates/runtime-core/src/error.rs`
+- [X] T011 [P] Write `error_breakpoint_not_found_display` — assert `BreakpointNotFound(5).to_string()` contains "5" — `crates/runtime-core/src/error.rs`
+- [X] T012 [P] Write `error_invalid_state_display` — assert `InvalidState { current: "Running".to_string(), required: "Paused" }.to_string()` contains "Running" and "Paused" — `crates/runtime-core/src/error.rs`
+- [X] T013 Write `invalid_state_maps_to_minus_32001` — assert `to_mcp_error_code(&DebuggerError::InvalidState { current: "".to_string(), required: "" })` == `-32001` — `crates/protocol/src/error.rs`
+- [X] T014 [P] Write `breakpoint_not_found_maps_to_minus_32003` — `to_mcp_error_code(&BreakpointNotFound(1))` == `-32003` — `crates/protocol/src/error.rs`
+- [X] T015 [P] Write `thread_not_found_maps_to_minus_32004` — `to_mcp_error_code(&ThreadNotFound(1))` == `-32004` — `crates/protocol/src/error.rs`
+- [X] T016 [P] Write `generic_error_maps_to_minus_32000` — `to_mcp_error_code(&ProcessNotFound)` == `-32000` — `crates/protocol/src/error.rs`
 
 **Checkpoint**: `cargo test -p runtime-core error` and `cargo test -p protocol error` pass.
 
@@ -76,29 +76,29 @@ These tests are in `crates/runtime-core/src/error.rs` and `crates/protocol/src/e
 
 ### `pdb_info.rs` — free functions
 
-- [ ] T017 [P] [US1] Write `short_name_strips_hash` — `short_name("bubble_sort::h1a2b3c4d")` == `"bubble_sort"` — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T018 [P] [US1] Write `short_name_takes_last_segment` — `short_name("std::vec::Vec::push")` == `"push"` — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T019 [P] [US1] Write `short_name_simple` — `short_name("main")` == `"main"` — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T020 [P] [US1] Write `primitive_size_bool` — `primitive_size_from_type_name("bool")` == `1` — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T021 [P] [US1] Write `primitive_size_i32` — `primitive_size_from_type_name("i32")` == `4` — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T022 [P] [US1] Write `primitive_size_usize` — `primitive_size_from_type_name("usize")` == `8` — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T023 [P] [US1] Write `primitive_size_unknown` — `primitive_size_from_type_name("MyStruct")` == `0` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T017 [P] [US1] Write `short_name_strips_hash` — `short_name("bubble_sort::h1a2b3c4d")` == `"bubble_sort"` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T018 [P] [US1] Write `short_name_takes_last_segment` — `short_name("std::vec::Vec::push")` == `"push"` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T019 [P] [US1] Write `short_name_simple` — `short_name("main")` == `"main"` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T020 [P] [US1] Write `primitive_size_bool` — `primitive_size_from_type_name("bool")` == `1` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T021 [P] [US1] Write `primitive_size_i32` — `primitive_size_from_type_name("i32")` == `4` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T022 [P] [US1] Write `primitive_size_usize` — `primitive_size_from_type_name("usize")` == `8` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T023 [P] [US1] Write `primitive_size_unknown` — `primitive_size_from_type_name("MyStruct")` == `0` — `crates/win-debug-bridge/src/pdb_info.rs`
 
 ### `pdb_info.rs` — VA↔RVA math
 
-- [ ] T024 [P] [US1] Write `rva_to_va_adds_base` — construct `PdbInfo` with `image_base = 0x140000000`; assert `rva_to_va(0x1234)` == `0x140001234` — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T025 [P] [US1] Write `va_to_rva_subtracts_base` — assert `va_to_rva(0x140001234)` == `Some(0x1234)` — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T026 [P] [US1] Write `va_to_rva_below_base_returns_none` — assert `va_to_rva(0x100)` with base `0x140000000` == `None` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T024 [P] [US1] Write `rva_to_va_adds_base` — construct `PdbInfo` with `image_base = 0x140000000`; assert `rva_to_va(0x1234)` == `0x140001234` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T025 [P] [US1] Write `va_to_rva_subtracts_base` — assert `va_to_rva(0x140001234)` == `Some(0x1234)` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T026 [P] [US1] Write `va_to_rva_below_base_returns_none` — assert `va_to_rva(0x100)` with base `0x140000000` == `None` — `crates/win-debug-bridge/src/pdb_info.rs`
 
 ### `pdb_info.rs` — lookups with synthetic data
 
 Build a `PdbInfo` directly by populating its internal maps (make fields `pub(crate)` if needed).
 
-- [ ] T027 [US1] Write `va_to_source_exact_hit` — insert `rva=0x1000 → ("main.rs", 42)`; assert `va_to_source(image_base + 0x1000)` == `Some(SourceLocation { line: 42, .. })` — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T028 [P] [US1] Write `va_to_source_nearest_within_range` — insert rva `0x1000`; assert `va_to_source(image_base + 0x1000 + 50)` (within 256 bytes) returns the entry — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T029 [P] [US1] Write `va_to_source_too_far_returns_none` — 300 bytes past nearest entry → None — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T030 [P] [US1] Write `va_to_function_name_found` — insert function at rva `0x2000`; assert `va_to_function_name(image_base + 0x2000)` returns the name — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T031 [P] [US1] Write `va_to_function_name_not_found` — address before any function → None — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T027 [US1] Write `va_to_source_exact_hit` — insert `rva=0x1000 → ("main.rs", 42)`; assert `va_to_source(image_base + 0x1000)` == `Some(SourceLocation { line: 42, .. })` — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T028 [P] [US1] Write `va_to_source_nearest_within_range` — insert rva `0x1000`; assert `va_to_source(image_base + 0x1000 + 50)` (within 256 bytes) returns the entry — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T029 [P] [US1] Write `va_to_source_too_far_returns_none` — 300 bytes past nearest entry → None — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T030 [P] [US1] Write `va_to_function_name_found` — insert function at rva `0x2000`; assert `va_to_function_name(image_base + 0x2000)` returns the name — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T031 [P] [US1] Write `va_to_function_name_not_found` — address before any function → None — `crates/win-debug-bridge/src/pdb_info.rs`
 
 **Checkpoint**: `cargo test -p win-debug-bridge pdb` — all pass.
 
@@ -112,26 +112,26 @@ Build a `PdbInfo` directly by populating its internal maps (make fields `pub(cra
 
 ### `windows_backend.rs` — `bytes_to_value`
 
-- [ ] T032 [P] [US2] Write `bytes_bool_false` — `bytes_to_value(&[0x00], "bool", 0)` == `Scalar(Bool(false))` — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T033 [P] [US2] Write `bytes_bool_true` — `bytes_to_value(&[0x01], "bool", 0)` == `Scalar(Bool(true))` — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T034 [P] [US2] Write `bytes_i32_positive` — `bytes_to_value(&[0x2c,0x00,0x00,0x00], "i32", 0)` == `Scalar(Int(44))` — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T035 [P] [US2] Write `bytes_i32_negative` — `bytes_to_value(&[0xff,0xff,0xff,0xff], "i32", 0)` == `Scalar(Int(-1))` — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T036 [P] [US2] Write `bytes_u32` — `bytes_to_value(&[0x05,0x00,0x00,0x00], "u32", 0)` == `Scalar(UInt(5))` — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T037 [P] [US2] Write `bytes_usize` — 8 zero bytes + `0x08` for "usize" → `Scalar(UInt(8))` — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T038 [P] [US2] Write `bytes_f32` — IEEE-754 bytes for `1.0f32` → `Scalar(Float(1.0))` — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T039 [P] [US2] Write `bytes_unknown_type_returns_opaque` — any bytes with type "SomeStruct" → `Opaque { summary: contains "bytes" }` — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T032 [P] [US2] Write `bytes_bool_false` — `bytes_to_value(&[0x00], "bool", 0)` == `Scalar(Bool(false))` — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T033 [P] [US2] Write `bytes_bool_true` — `bytes_to_value(&[0x01], "bool", 0)` == `Scalar(Bool(true))` — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T034 [P] [US2] Write `bytes_i32_positive` — `bytes_to_value(&[0x2c,0x00,0x00,0x00], "i32", 0)` == `Scalar(Int(44))` — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T035 [P] [US2] Write `bytes_i32_negative` — `bytes_to_value(&[0xff,0xff,0xff,0xff], "i32", 0)` == `Scalar(Int(-1))` — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T036 [P] [US2] Write `bytes_u32` — `bytes_to_value(&[0x05,0x00,0x00,0x00], "u32", 0)` == `Scalar(UInt(5))` — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T037 [P] [US2] Write `bytes_usize` — 8 zero bytes + `0x08` for "usize" → `Scalar(UInt(8))` — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T038 [P] [US2] Write `bytes_f32` — IEEE-754 bytes for `1.0f32` → `Scalar(Float(1.0))` — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T039 [P] [US2] Write `bytes_unknown_type_returns_opaque` — any bytes with type "SomeStruct" → `Opaque { summary: contains "bytes" }` — `crates/win-debug-bridge/src/windows_backend.rs`
 
 ### `runtime-core/src/serialization.rs` — Serializer (linked to read_locals output)
 
-- [ ] T040 [P] [US2] Write `serialize_bool_true` — `Scalar(Bool(true))` serializes to JSON `true` — `crates/runtime-core/src/serialization.rs`
-- [ ] T041 [P] [US2] Write `serialize_int_negative` — `Scalar(Int(-12))` serializes to JSON `-12` — `crates/runtime-core/src/serialization.rs`
-- [ ] T042 [P] [US2] Write `serialize_string_within_limit` — string length < `max_string_bytes` → no `$truncated` key — `crates/runtime-core/src/serialization.rs`
-- [ ] T043 [P] [US2] Write `serialize_string_over_limit` — string length > limit → `$truncated: true` and `total_bytes` present — `crates/runtime-core/src/serialization.rs`
-- [ ] T044 [US2] Write `serialize_depth_limit` — struct nested deeper than `max_depth` → inner level has `$depth_limit: true` — `crates/runtime-core/src/serialization.rs`
-- [ ] T045 [P] [US2] Write `serialize_array_within_limit` — array length ≤ `max_array_elements` → no `$truncated` — `crates/runtime-core/src/serialization.rs`
-- [ ] T046 [P] [US2] Write `serialize_array_over_limit` — array length > limit → `$truncated: true`, `shown` and `total` set — `crates/runtime-core/src/serialization.rs`
-- [ ] T047 [P] [US2] Write `serialize_cyclic_ref` — same pointer address visited twice → second occurrence has `$ref: "0x..."` — `crates/runtime-core/src/serialization.rs`
-- [ ] T048 [P] [US2] Write `serialize_null_pointer` — `Pointer { address: 0, .. }` → JSON has `null: true` — `crates/runtime-core/src/serialization.rs`
+- [X] T040 [P] [US2] Write `serialize_bool_true` — `Scalar(Bool(true))` serializes to JSON `true` — `crates/runtime-core/src/serialization.rs`
+- [X] T041 [P] [US2] Write `serialize_int_negative` — `Scalar(Int(-12))` serializes to JSON `-12` — `crates/runtime-core/src/serialization.rs`
+- [X] T042 [P] [US2] Write `serialize_string_within_limit` — string length < `max_string_bytes` → no `$truncated` key — `crates/runtime-core/src/serialization.rs`
+- [X] T043 [P] [US2] Write `serialize_string_over_limit` — string length > limit → `$truncated: true` and `total_bytes` present — `crates/runtime-core/src/serialization.rs`
+- [X] T044 [US2] Write `serialize_depth_limit` — struct nested deeper than `max_depth` → inner level has `$depth_limit: true` — `crates/runtime-core/src/serialization.rs`
+- [X] T045 [P] [US2] Write `serialize_array_within_limit` — array length ≤ `max_array_elements` → no `$truncated` — `crates/runtime-core/src/serialization.rs`
+- [X] T046 [P] [US2] Write `serialize_array_over_limit` — array length > limit → `$truncated: true`, `shown` and `total` set — `crates/runtime-core/src/serialization.rs`
+- [X] T047 [P] [US2] Write `serialize_cyclic_ref` — same pointer address visited twice → second occurrence has `$ref: "0x..."` — `crates/runtime-core/src/serialization.rs`
+- [X] T048 [P] [US2] Write `serialize_null_pointer` — `Pointer { address: 0, .. }` → JSON has `null: true` — `crates/runtime-core/src/serialization.rs`
 
 **Checkpoint**: `cargo test -p runtime-core serial` and `cargo test -p win-debug-bridge bytes` — all pass.
 
@@ -143,15 +143,15 @@ Build a `PdbInfo` directly by populating its internal maps (make fields `pub(cra
 
 **Independent Test**: `cargo test -p runtime-core session` — all pass.
 
-- [ ] T049 [P] [US3] Write `session_new_starts_idle` — `DebugSession::new(target).state` == `SessionState::Idle` — `crates/runtime-core/src/session.rs`
-- [ ] T050 [P] [US3] Write `transition_idle_to_launching` — `session.transition(Launching)` → Ok — `crates/runtime-core/src/session.rs`
-- [ ] T051 [P] [US3] Write `transition_idle_to_running_fails` — `session.transition(Running)` → Err(InvalidState) — `crates/runtime-core/src/session.rs`
-- [ ] T052 [P] [US3] Write `transition_running_to_paused` — Ok — `crates/runtime-core/src/session.rs`
-- [ ] T053 [P] [US3] Write `transition_paused_to_stepping` — Ok — `crates/runtime-core/src/session.rs`
-- [ ] T054 [P] [US3] Write `transition_stepping_to_paused` — Ok — `crates/runtime-core/src/session.rs`
-- [ ] T055 [P] [US3] Write `transition_paused_to_running` — Ok — `crates/runtime-core/src/session.rs`
-- [ ] T056 [P] [US3] Write `transition_terminated_is_terminal` — `session.transition(Running)` after `Terminated(0)` → Err(InvalidState) — `crates/runtime-core/src/session.rs`
-- [ ] T057 [US3] Write `full_session_lifecycle` — Idle→Launching→Running→Paused(Breakpoint)→Stepping→Paused(Step)→Running→Terminated — all transitions Ok — `crates/runtime-core/src/session.rs`
+- [X] T049 [P] [US3] Write `session_new_starts_idle` — `DebugSession::new(target).state` == `SessionState::Idle` — `crates/runtime-core/src/session.rs`
+- [X] T050 [P] [US3] Write `transition_idle_to_launching` — `session.transition(Launching)` → Ok — `crates/runtime-core/src/session.rs`
+- [X] T051 [P] [US3] Write `transition_idle_to_running_fails` — `session.transition(Running)` → Err(InvalidState) — `crates/runtime-core/src/session.rs`
+- [X] T052 [P] [US3] Write `transition_running_to_paused` — Ok — `crates/runtime-core/src/session.rs`
+- [X] T053 [P] [US3] Write `transition_paused_to_stepping` — Ok — `crates/runtime-core/src/session.rs`
+- [X] T054 [P] [US3] Write `transition_stepping_to_paused` — Ok — `crates/runtime-core/src/session.rs`
+- [X] T055 [P] [US3] Write `transition_paused_to_running` — Ok — `crates/runtime-core/src/session.rs`
+- [X] T056 [P] [US3] Write `transition_terminated_is_terminal` — `session.transition(Running)` after `Terminated(0)` → Err(InvalidState) — `crates/runtime-core/src/session.rs`
+- [X] T057 [US3] Write `full_session_lifecycle` — Idle→Launching→Running→Paused(Breakpoint)→Stepping→Paused(Step)→Running→Terminated — all transitions Ok — `crates/runtime-core/src/session.rs`
 
 **Checkpoint**: `cargo test -p runtime-core session` — all 9 pass.
 
@@ -163,10 +163,10 @@ Build a `PdbInfo` directly by populating its internal maps (make fields `pub(cra
 
 **Independent Test**: `cargo test -p win-debug-bridge source` — all pass.
 
-- [ ] T058 [P] [US4] Write `source_to_va_round_trip` — insert `(stem, line) → rva` entry; assert `source_to_va(file, line)` returns the correct VA — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T059 [P] [US4] Write `source_to_va_unknown_returns_none` — file/line not in map → None — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T060 [P] [US4] Write `function_name_to_va_exact` — assert `function_name_to_va("bubble_sort")` returns the inserted RVA as VA — `crates/win-debug-bridge/src/pdb_info.rs`
-- [ ] T061 [P] [US4] Write `function_name_to_va_missing` — name not in map → None — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T058 [P] [US4] Write `source_to_va_round_trip` — insert `(stem, line) → rva` entry; assert `source_to_va(file, line)` returns the correct VA — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T059 [P] [US4] Write `source_to_va_unknown_returns_none` — file/line not in map → None — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T060 [P] [US4] Write `function_name_to_va_exact` — assert `function_name_to_va("bubble_sort")` returns the inserted RVA as VA — `crates/win-debug-bridge/src/pdb_info.rs`
+- [X] T061 [P] [US4] Write `function_name_to_va_missing` — name not in map → None — `crates/win-debug-bridge/src/pdb_info.rs`
 
 **Checkpoint**: `cargo test -p win-debug-bridge source` and `cargo test -p win-debug-bridge function` — all pass.
 
@@ -178,9 +178,9 @@ Build a `PdbInfo` directly by populating its internal maps (make fields `pub(cra
 
 **Independent Test**: `cargo test -p runtime-core probe` — all pass.
 
-- [ ] T062 [P] [US5] Write `probe_registry_register_lookup` — `register("ctx", vec!["a","b"])` then `lookup("ctx")` == `Some(&["a","b"][..])` — `crates/runtime-core/src/probe.rs`
-- [ ] T063 [P] [US5] Write `probe_registry_unknown_returns_none` — `lookup("missing")` == None — `crates/runtime-core/src/probe.rs`
-- [ ] T064 [P] [US5] Write `probe_macro_returns_context_and_vars` — `probe!("ctx", x, y)` returns `("ctx".to_string(), vec!["x","y"])` — `crates/runtime-core/src/probe.rs`
+- [X] T062 [P] [US5] Write `probe_registry_register_lookup` — `register("ctx", vec!["a","b"])` then `lookup("ctx")` == `Some(&["a","b"][..])` — `crates/runtime-core/src/probe.rs`
+- [X] T063 [P] [US5] Write `probe_registry_unknown_returns_none` — `lookup("missing")` == None — `crates/runtime-core/src/probe.rs`
+- [X] T064 [P] [US5] Write `probe_macro_returns_context_and_vars` — `probe!("ctx", x, y)` returns `("ctx".to_string(), vec!["x","y"])` — `crates/runtime-core/src/probe.rs`
 
 **Checkpoint**: `cargo test -p runtime-core probe` — all 3 pass.
 
@@ -192,11 +192,11 @@ Build a `PdbInfo` directly by populating its internal maps (make fields `pub(cra
 
 **Independent Test**: `cargo test -p win-debug-bridge panic` — all pass.
 
-- [ ] T065 [P] [US6] Write `panic_new_format` — input: `"thread 'main' panicked at src\\main.rs:58:22:\nindex out of bounds: the len is 3 but the index is 99\n"` → `Some("index out of bounds: the len is 3 but the index is 99")` — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T066 [P] [US6] Write `panic_old_format` — input with `panicked at 'message', file:line` → `Some("message")` — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T067 [P] [US6] Write `panic_empty_string_returns_none` — `extract_panic_message("")` == None — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T068 [P] [US6] Write `panic_unrelated_text_returns_none` — `extract_panic_message("hello world\n")` == None — `crates/win-debug-bridge/src/windows_backend.rs`
-- [ ] T069 [P] [US6] Write `panic_unwrap_on_none` — new-format input for `Option::unwrap()` → `Some` containing "called `Option::unwrap()` on a `None` value" — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T065 [P] [US6] Write `panic_new_format` — input: `"thread 'main' panicked at src\\main.rs:58:22:\nindex out of bounds: the len is 3 but the index is 99\n"` → `Some("index out of bounds: the len is 3 but the index is 99")` — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T066 [P] [US6] Write `panic_old_format` — input with `panicked at 'message', file:line` → `Some("message")` — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T067 [P] [US6] Write `panic_empty_string_returns_none` — `extract_panic_message("")` == None — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T068 [P] [US6] Write `panic_unrelated_text_returns_none` — `extract_panic_message("hello world\n")` == None — `crates/win-debug-bridge/src/windows_backend.rs`
+- [X] T069 [P] [US6] Write `panic_unwrap_on_none` — new-format input for `Option::unwrap()` → `Some` containing "called `Option::unwrap()` on a `None` value" — `crates/win-debug-bridge/src/windows_backend.rs`
 
 **Checkpoint**: `cargo test -p win-debug-bridge panic` — all 5 pass.
 
@@ -208,21 +208,21 @@ Build a `PdbInfo` directly by populating its internal maps (make fields `pub(cra
 
 ### Breakpoint lifecycle (runtime-core, applies to all stories)
 
-- [ ] T070 [P] Write `breakpoint_hit_count_increments` — `bp.increment_hit_count()` → `bp.hit_count == 1`; call twice → `hit_count == 2` — `crates/runtime-core/src/breakpoint.rs`
-- [ ] T071 [P] Write `breakpoint_toggle_enabled` — starts `true`; toggle → `false`; toggle → `true` — `crates/runtime-core/src/breakpoint.rs`
+- [X] T070 [P] Write `breakpoint_hit_count_increments` — `bp.increment_hit_count()` → `bp.hit_count == 1`; call twice → `hit_count == 2` — `crates/runtime-core/src/breakpoint.rs`
+- [X] T071 [P] Write `breakpoint_toggle_enabled` — starts `true`; toggle → `false`; toggle → `true` — `crates/runtime-core/src/breakpoint.rs`
 
 ### Integration tests (require `debug-target-example.pdb`)
 
-- [ ] T072 Write `pdb_load_succeeds` — `#[ignore]` — `PdbInfo::load("target/debug/debug-target-example.exe", base)` → Ok, functions count > 0 — `crates/win-debug-bridge/tests/integration.rs`
-- [ ] T073 [P] Write `pdb_source_to_va_main_line` — `#[ignore]` — `source_to_va("main.rs", KNOWN_LINE)` → Some(non-zero) — `crates/win-debug-bridge/tests/integration.rs`
-- [ ] T074 [P] Write `pdb_va_to_source_round_trip` — `#[ignore]` — `va_to_source(source_to_va("main.rs", L).unwrap())` → file contains "main", line == L — `crates/win-debug-bridge/tests/integration.rs`
-- [ ] T075 [P] Write `pdb_function_bubble_sort_found` — `#[ignore]` — `function_name_to_va("bubble_sort")` → Some — `crates/win-debug-bridge/tests/integration.rs`
-- [ ] T076 Write `pdb_locals_contain_pass` — `#[ignore]` — `locals_at_va(bubble_sort_va)` → list contains a `PdbLocal` with `name == "pass"` — `crates/win-debug-bridge/tests/integration.rs`
-- [ ] T077 Write `serialize_bool_false` — `Scalar(Bool(false))` serializes to JSON `false` — `crates/runtime-core/src/serialization.rs`
+- [X] T072 Write `pdb_load_succeeds` — `#[ignore]` — `PdbInfo::load("target/debug/debug-target-example.exe", base)` → Ok, functions count > 0 — `crates/win-debug-bridge/tests/integration.rs`
+- [X] T073 [P] Write `pdb_source_to_va_main_line` — `#[ignore]` — `source_to_va("main.rs", KNOWN_LINE)` → Some(non-zero) — `crates/win-debug-bridge/tests/integration.rs`
+- [X] T074 [P] Write `pdb_va_to_source_round_trip` — `#[ignore]` — `va_to_source(source_to_va("main.rs", L).unwrap())` → file contains "main", line == L — `crates/win-debug-bridge/tests/integration.rs`
+- [X] T075 [P] Write `pdb_function_bubble_sort_found` — `#[ignore]` — `function_name_to_va("bubble_sort")` → Some — `crates/win-debug-bridge/tests/integration.rs`
+- [X] T076 Write `pdb_locals_contain_pass` — `#[ignore]` — `locals_at_va(bubble_sort_va)` → list contains a `PdbLocal` with `name == "pass"` — `crates/win-debug-bridge/tests/integration.rs`
+- [X] T077 Write `serialize_bool_false` — `Scalar(Bool(false))` serializes to JSON `false` — `crates/runtime-core/src/serialization.rs`
 
 ### Final validation
 
-- [ ] T078 Run `cargo test --workspace` and confirm all non-ignored tests pass — verify zero failures
+- [X] T078 Run `cargo test --workspace` and confirm all non-ignored tests pass — verify zero failures
 - [ ] T079 [P] Run `cargo test --workspace -- --ignored` (requires `cargo build -p debug-target-example` first) — verify integration tests pass
 
 ---
