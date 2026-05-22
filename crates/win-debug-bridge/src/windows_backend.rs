@@ -945,15 +945,18 @@ fn extract_panic_message(stderr: &str) -> Option<String> {
         // Try new format: "panicked at file:line:\nmessage"
         if let Some(newline_pos) = after.find('\n') {
             let message_start = &after[newline_pos + 1..];
-            let message = message_start.lines().next()?.trim();
-            if !message.is_empty() {
-                return Some(message.to_string());
+            if let Some(message) = message_start.lines().next() {
+                let trimmed = message.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
             }
         }
         // Try old format: "panicked at 'message', ..."
         if let Some(rest) = after.strip_prefix("panicked at '") {
-            let end = rest.find("', ")?;
-            return Some(rest[..end].to_string());
+            if let Some(end) = rest.find("', ") {
+                return Some(rest[..end].to_string());
+            }
         }
     }
 
@@ -1015,5 +1018,40 @@ mod tests {
         } else {
             panic!("expected Opaque");
         }
+    }
+
+    #[test]
+    fn panic_new_format() {
+        let input = "thread 'main' panicked at src\\main.rs:58:22:\nindex out of bounds: the len is 3 but the index is 99\n";
+        assert_eq!(
+            extract_panic_message(input),
+            Some("index out of bounds: the len is 3 but the index is 99".to_string())
+        );
+    }
+
+    #[test]
+    fn panic_old_format() {
+        let input = "thread 'main' panicked at 'index out of bounds: the len is 3', src\\main.rs:58:22\n";
+        assert_eq!(
+            extract_panic_message(input),
+            Some("index out of bounds: the len is 3".to_string())
+        );
+    }
+
+    #[test]
+    fn panic_empty_string_returns_none() {
+        assert_eq!(extract_panic_message(""), None);
+    }
+
+    #[test]
+    fn panic_unrelated_text_returns_none() {
+        assert_eq!(extract_panic_message("hello world\n"), None);
+    }
+
+    #[test]
+    fn panic_unwrap_on_none() {
+        let input = "thread 'main' panicked at src\\main.rs:3:5:\ncalled `Option::unwrap()` on a `None` value\n";
+        let msg = extract_panic_message(input).unwrap();
+        assert!(msg.contains("called `Option::unwrap()` on a `None` value"));
     }
 }
