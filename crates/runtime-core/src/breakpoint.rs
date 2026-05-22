@@ -39,3 +39,6 @@ impl Breakpoint {
         self.enabled = !self.enabled;
     }
 }
+
+#[cfg(test)]
+mod tests {}
