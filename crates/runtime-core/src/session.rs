@@ -136,3 +136,6 @@ impl DebugSession {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {}
