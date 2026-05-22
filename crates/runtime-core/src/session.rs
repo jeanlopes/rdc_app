@@ -138,4 +138,92 @@ impl DebugSession {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use crate::error::DebuggerError;
+
+    fn make_target() -> DebugTarget {
+        DebugTarget {
+            executable: "/bin/test".into(),
+            args: vec![],
+            env: HashMap::new(),
+            working_dir: None,
+        }
+    }
+
+    #[test]
+    fn session_new_starts_idle() {
+        let session = DebugSession::new(make_target());
+        assert_eq!(session.state, SessionState::Idle);
+    }
+
+    #[test]
+    fn transition_idle_to_launching() {
+        let mut session = DebugSession::new(make_target());
+        assert!(session.transition(SessionState::Launching).is_ok());
+    }
+
+    #[test]
+    fn transition_idle_to_running_fails() {
+        let mut session = DebugSession::new(make_target());
+        assert!(matches!(session.transition(SessionState::Running), Err(DebuggerError::InvalidState { .. })));
+    }
+
+    #[test]
+    fn transition_running_to_paused() {
+        let mut session = DebugSession::new(make_target());
+        session.transition(SessionState::Launching).unwrap();
+        session.transition(SessionState::Running).unwrap();
+        assert!(session.transition(SessionState::Paused(PauseReason::UserRequest)).is_ok());
+    }
+
+    #[test]
+    fn transition_paused_to_stepping() {
+        let mut session = DebugSession::new(make_target());
+        session.transition(SessionState::Launching).unwrap();
+        session.transition(SessionState::Running).unwrap();
+        session.transition(SessionState::Paused(PauseReason::UserRequest)).unwrap();
+        assert!(session.transition(SessionState::Stepping).is_ok());
+    }
+
+    #[test]
+    fn transition_stepping_to_paused() {
+        let mut session = DebugSession::new(make_target());
+        session.transition(SessionState::Launching).unwrap();
+        session.transition(SessionState::Running).unwrap();
+        session.transition(SessionState::Paused(PauseReason::UserRequest)).unwrap();
+        session.transition(SessionState::Stepping).unwrap();
+        assert!(session.transition(SessionState::Paused(PauseReason::Step)).is_ok());
+    }
+
+    #[test]
+    fn transition_paused_to_running() {
+        let mut session = DebugSession::new(make_target());
+        session.transition(SessionState::Launching).unwrap();
+        session.transition(SessionState::Running).unwrap();
+        session.transition(SessionState::Paused(PauseReason::UserRequest)).unwrap();
+        assert!(session.transition(SessionState::Running).is_ok());
+    }
+
+    #[test]
+    fn transition_terminated_is_terminal() {
+        let mut session = DebugSession::new(make_target());
+        session.transition(SessionState::Launching).unwrap();
+        session.transition(SessionState::Running).unwrap();
+        session.transition(SessionState::Terminated(0)).unwrap();
+        assert!(matches!(session.transition(SessionState::Running), Err(DebuggerError::InvalidState { .. })));
+    }
+
+    #[test]
+    fn full_session_lifecycle() {
+        let mut session = DebugSession::new(make_target());
+        session.transition(SessionState::Launching).unwrap();
+        session.transition(SessionState::Running).unwrap();
+        session.transition(SessionState::Paused(PauseReason::Breakpoint(1))).unwrap();
+        session.transition(SessionState::Stepping).unwrap();
+        session.transition(SessionState::Paused(PauseReason::Step)).unwrap();
+        session.transition(SessionState::Running).unwrap();
+        session.transition(SessionState::Terminated(0)).unwrap();
+    }
+}
