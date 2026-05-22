@@ -957,7 +957,8 @@ fn extract_panic_message(stderr: &str) -> Option<String> {
         }
     }
 
-    // Fallback: return the whole stderr trimmed
-    let trimmed = stderr.trim();
-    if !trimmed.is_empty() { Some(trimmed.to_string()) } else { None }
+    None
 }
+
+#[cfg(test)]
+mod tests {}
