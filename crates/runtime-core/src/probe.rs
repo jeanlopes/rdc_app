@@ -55,3 +55,6 @@ macro_rules! probe {
         }
     };
 }
+
+#[cfg(test)]
+mod tests {}
