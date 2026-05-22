@@ -29,4 +29,19 @@ mod tests {
         let e = DebuggerError::InvalidState { current: "".to_string(), required: "" };
         assert_eq!(to_mcp_error_code(&e), -32001);
     }
+
+    #[test]
+    fn breakpoint_not_found_maps_to_minus_32003() {
+        assert_eq!(to_mcp_error_code(&DebuggerError::BreakpointNotFound(1)), -32003);
+    }
+
+    #[test]
+    fn thread_not_found_maps_to_minus_32004() {
+        assert_eq!(to_mcp_error_code(&DebuggerError::ThreadNotFound(1)), -32004);
+    }
+
+    #[test]
+    fn generic_error_maps_to_minus_32000() {
+        assert_eq!(to_mcp_error_code(&DebuggerError::ProcessNotFound), -32000);
+    }
 }
