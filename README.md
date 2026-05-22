@@ -231,6 +231,14 @@ Key principles:
 
 ---
 
+O fluxo do SpecKit é linear e obrigatório:
+
+/speckit-specify  →  cria specs/003-egui-introspection/spec.md
+/speckit-clarify  →  faz perguntas e refina o spec.md
+/speckit-plan     →  cria plan.md + data-model.md + etc
+/speckit-tasks    →  cria tasks.md
+/speckit-implement →  executa as tasks
+
 ## License
 
 MIT
