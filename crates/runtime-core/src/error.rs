@@ -29,4 +29,11 @@ pub enum DebuggerError {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_process_not_found_display() {
+        assert!(DebuggerError::ProcessNotFound.to_string().contains("process not found"));
+    }
+}
