@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at specs/002-pdb-stepping-panic/plan.md
+at specs/003-egui-introspection/plan.md
 <!-- SPECKIT END -->
