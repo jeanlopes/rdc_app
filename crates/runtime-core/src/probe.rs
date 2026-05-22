@@ -12,7 +12,8 @@ use std::collections::HashMap;
 /// use runtime_core::probe::ProbeRegistry;
 /// let mut reg = ProbeRegistry::new();
 /// reg.register("measure_layout", vec!["current_x".into(), "remaining_width".into()]);
-/// assert_eq!(reg.lookup("measure_layout"), Some(&["current_x", "remaining_width"][..]));
+/// let expected: &[String] = &["current_x".to_string(), "remaining_width".to_string()];
+/// assert_eq!(reg.lookup("measure_layout"), Some(expected));
 /// ```
 #[derive(Debug, Default)]
 pub struct ProbeRegistry {
