@@ -12,7 +12,8 @@ use std::collections::HashMap;
 /// use runtime_core::probe::ProbeRegistry;
 /// let mut reg = ProbeRegistry::new();
 /// reg.register("measure_layout", vec!["current_x".into(), "remaining_width".into()]);
-/// assert_eq!(reg.lookup("measure_layout"), Some(&["current_x", "remaining_width"][..]));
+/// let expected: &[String] = &["current_x".to_string(), "remaining_width".to_string()];
+/// assert_eq!(reg.lookup("measure_layout"), Some(expected));
 /// ```
 #[derive(Debug, Default)]
 pub struct ProbeRegistry {
@@ -54,4 +55,30 @@ macro_rules! probe {
             ($context.to_string(), vars)
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_registry_register_lookup() {
+        let mut reg = ProbeRegistry::new();
+        reg.register("ctx", vec!["a".into(), "b".into()]);
+        let result = reg.lookup("ctx").unwrap();
+        assert_eq!(result, &["a".to_string(), "b".to_string()][..]);
+    }
+
+    #[test]
+    fn probe_registry_unknown_returns_none() {
+        let reg = ProbeRegistry::new();
+        assert_eq!(reg.lookup("missing"), None);
+    }
+
+    #[test]
+    fn probe_macro_returns_context_and_vars() {
+        let (ctx, vars) = probe!("ctx", x, y);
+        assert_eq!(ctx, "ctx");
+        assert_eq!(vars, vec!["x", "y"]);
+    }
 }

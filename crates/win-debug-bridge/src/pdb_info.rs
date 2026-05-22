@@ -47,6 +47,14 @@ impl PdbInfo {
     /// Load and index a PDB file located next to `exe_path`.
     pub fn load(exe_path: &Path, image_base: u64) -> Result<Self, DebuggerError> {
         let pdb_path = exe_path.with_extension("pdb");
+        // Rust on Windows names .pdb with underscores even when the binary uses hyphens.
+        let pdb_path = if !pdb_path.exists() {
+            let stem = exe_path.file_stem().unwrap_or_default().to_string_lossy().replace('-', "_");
+            let alt = exe_path.with_file_name(format!("{}.pdb", stem));
+            if alt.exists() { alt } else { pdb_path }
+        } else {
+            pdb_path
+        };
         if !pdb_path.exists() {
             return Err(DebuggerError::DebuggerError(format!(
                 "PDB not found at {}. Compile with `cargo build` (not --release).",
@@ -147,7 +155,34 @@ impl PdbInfo {
                     let mut current_locals: Vec<PdbLocal> = Vec::new();
                     let mut pending_name: Option<(String, String)> = None; // (name, type_name)
 
+                    // S_DEFRANGE_FRAMEPOINTER_REL / _FULL_SCOPE symbol kinds —
+                    // pdb 0.8 does not parse these, so we read the offset from raw bytes.
+                    const S_DEFRANGE_FRAMEPOINTER_REL: u16 = 0x1142;
+                    const S_DEFRANGE_FRAMEPOINTER_REL_FULL_SCOPE: u16 = 0x1144;
+
                     while let Ok(Some(sym)) = symbols.next() {
+                        let raw_kind = sym.raw_kind();
+                        // Handle S_DEFRANGE_* before parse() — pdb 0.8 returns Error for these.
+                        if raw_kind == S_DEFRANGE_FRAMEPOINTER_REL
+                            || raw_kind == S_DEFRANGE_FRAMEPOINTER_REL_FULL_SCOPE
+                        {
+                            if let Some((name, type_name)) = pending_name.take() {
+                                // Bytes layout: [kind: u16][offset: i32][...]
+                                let raw = sym.raw_bytes();
+                                if raw.len() >= 6 {
+                                    let offset = i32::from_le_bytes([raw[2], raw[3], raw[4], raw[5]]);
+                                    let sz = primitive_size_from_type_name(&type_name);
+                                    current_locals.push(PdbLocal {
+                                        name,
+                                        type_name,
+                                        location: VarLocation::FramePointerRelative(offset),
+                                        size: sz,
+                                    });
+                                }
+                            }
+                            continue;
+                        }
+
                         match sym.parse() {
                             Ok(SymbolData::Procedure(proc)) => {
                                 // Save previous procedure's locals
@@ -157,6 +192,14 @@ impl PdbInfo {
                                     }
                                 }
                                 current_proc_rva = proc.offset.to_rva(&address_map).map(|r| r.0);
+                                // Index private functions not captured by global_symbols()
+                                if let Some(rva) = current_proc_rva {
+                                    let full_name = proc.name.to_string().into_owned();
+                                    let short = short_name(&full_name);
+                                    info.function_starts.push((rva, full_name.clone()));
+                                    info.name_to_rva.entry(full_name).or_insert(rva);
+                                    info.name_to_rva.entry(short).or_insert(rva);
+                                }
                                 current_locals.clear();
                                 pending_name = None;
                             }
@@ -166,17 +209,21 @@ impl PdbInfo {
                                 pending_name = Some((name, type_name));
                             }
                             Ok(SymbolData::RegisterRelative(reg)) => {
-                                if let Some((name, type_name)) = pending_name.take() {
-                                    let sz = primitive_size_from_type_name(&type_name);
-                                    current_locals.push(PdbLocal {
-                                        name,
-                                        type_name,
-                                        location: VarLocation::FramePointerRelative(reg.offset),
-                                        size: sz,
-                                    });
-                                }
+                                // S_REGREL32 (old format): name is in the record itself.
+                                let name = reg.name.to_string().into_owned();
+                                let type_name = format!("type_{}", reg.type_index.0);
+                                let sz = primitive_size_from_type_name(&type_name);
+                                current_locals.push(PdbLocal {
+                                    name,
+                                    type_name,
+                                    location: VarLocation::FramePointerRelative(reg.offset),
+                                    size: sz,
+                                });
+                                pending_name = None;
                             }
                             _ => {
+                                // Clear pending_name only on non-defrange unrecognised symbols.
+                                // Defrange records are handled before parse() above.
                                 pending_name = None;
                             }
                         }
@@ -191,6 +238,10 @@ impl PdbInfo {
                 }
             }
         }
+
+        // Re-sort after module procedure symbols were added
+        info.function_starts.sort_by_key(|f| f.0);
+        info.function_starts.dedup_by_key(|f| f.0);
 
         tracing::info!(
             functions = info.function_starts.len(),
@@ -280,5 +331,149 @@ fn primitive_size_from_type_name(name: &str) -> usize {
         "i64" | "u64" | "f64" | "isize" | "usize" => 8,
         "i128" | "u128" => 16,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+impl PdbInfo {
+    pub fn test_new(
+        image_base: u64,
+        rva_to_source: BTreeMap<u32, (PathBuf, u32)>,
+        line_to_rva: HashMap<(String, u32), u32>,
+        function_starts: Vec<(u32, String)>,
+        name_to_rva: HashMap<String, u32>,
+    ) -> Self {
+        PdbInfo { image_base, rva_to_source, line_to_rva, function_starts, locals: HashMap::new(), name_to_rva }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: u64 = 0x140000000;
+
+    fn empty_pdb() -> PdbInfo {
+        PdbInfo::test_new(BASE, BTreeMap::new(), HashMap::new(), vec![], HashMap::new())
+    }
+
+    #[test]
+    fn short_name_strips_hash() {
+        assert_eq!(short_name("bubble_sort::h1a2b3c4d"), "bubble_sort");
+    }
+
+    #[test]
+    fn short_name_takes_last_segment() {
+        assert_eq!(short_name("std::vec::Vec::push"), "push");
+    }
+
+    #[test]
+    fn short_name_simple() {
+        assert_eq!(short_name("main"), "main");
+    }
+
+    #[test]
+    fn primitive_size_bool() {
+        assert_eq!(primitive_size_from_type_name("bool"), 1);
+    }
+
+    #[test]
+    fn primitive_size_i32() {
+        assert_eq!(primitive_size_from_type_name("i32"), 4);
+    }
+
+    #[test]
+    fn primitive_size_usize() {
+        assert_eq!(primitive_size_from_type_name("usize"), 8);
+    }
+
+    #[test]
+    fn primitive_size_unknown() {
+        assert_eq!(primitive_size_from_type_name("MyStruct"), 0);
+    }
+
+    #[test]
+    fn rva_to_va_adds_base() {
+        let pdb = empty_pdb();
+        assert_eq!(pdb.rva_to_va(0x1234), BASE + 0x1234);
+    }
+
+    #[test]
+    fn va_to_rva_subtracts_base() {
+        let pdb = empty_pdb();
+        assert_eq!(pdb.va_to_rva(BASE + 0x1234), Some(0x1234));
+    }
+
+    #[test]
+    fn va_to_rva_below_base_returns_none() {
+        let pdb = empty_pdb();
+        assert_eq!(pdb.va_to_rva(0x100), None);
+    }
+
+    #[test]
+    fn va_to_source_exact_hit() {
+        let mut rva_to_source = BTreeMap::new();
+        rva_to_source.insert(0x1000u32, (PathBuf::from("main.rs"), 42u32));
+        let pdb = PdbInfo::test_new(BASE, rva_to_source, HashMap::new(), vec![], HashMap::new());
+        let loc = pdb.va_to_source(BASE + 0x1000).unwrap();
+        assert_eq!(loc.line, 42);
+    }
+
+    #[test]
+    fn va_to_source_nearest_within_range() {
+        let mut rva_to_source = BTreeMap::new();
+        rva_to_source.insert(0x1000u32, (PathBuf::from("main.rs"), 42u32));
+        let pdb = PdbInfo::test_new(BASE, rva_to_source, HashMap::new(), vec![], HashMap::new());
+        let loc = pdb.va_to_source(BASE + 0x1000 + 50).unwrap();
+        assert_eq!(loc.line, 42);
+    }
+
+    #[test]
+    fn va_to_source_too_far_returns_none() {
+        let mut rva_to_source = BTreeMap::new();
+        rva_to_source.insert(0x1000u32, (PathBuf::from("main.rs"), 42u32));
+        let pdb = PdbInfo::test_new(BASE, rva_to_source, HashMap::new(), vec![], HashMap::new());
+        assert!(pdb.va_to_source(BASE + 0x1000 + 300).is_none());
+    }
+
+    #[test]
+    fn va_to_function_name_found() {
+        let function_starts = vec![(0x2000u32, "my_func".to_string())];
+        let pdb = PdbInfo::test_new(BASE, BTreeMap::new(), HashMap::new(), function_starts, HashMap::new());
+        let name = pdb.va_to_function_name(BASE + 0x2000).unwrap();
+        assert_eq!(name, "my_func");
+    }
+
+    #[test]
+    fn va_to_function_name_not_found() {
+        let function_starts = vec![(0x2000u32, "my_func".to_string())];
+        let pdb = PdbInfo::test_new(BASE, BTreeMap::new(), HashMap::new(), function_starts, HashMap::new());
+        assert!(pdb.va_to_function_name(BASE + 0x100).is_none());
+    }
+
+    #[test]
+    fn source_to_va_round_trip() {
+        let mut line_to_rva = HashMap::new();
+        line_to_rva.insert(("main".to_string(), 42u32), 0x1000u32);
+        let pdb = PdbInfo::test_new(BASE, BTreeMap::new(), line_to_rva, vec![], HashMap::new());
+        assert_eq!(pdb.source_to_va(std::path::Path::new("main.rs"), 42), Some(BASE + 0x1000));
+    }
+
+    #[test]
+    fn source_to_va_unknown_returns_none() {
+        assert!(empty_pdb().source_to_va(std::path::Path::new("unknown.rs"), 1).is_none());
+    }
+
+    #[test]
+    fn function_name_to_va_exact() {
+        let mut name_to_rva = HashMap::new();
+        name_to_rva.insert("bubble_sort".to_string(), 0x3000u32);
+        let pdb = PdbInfo::test_new(BASE, BTreeMap::new(), HashMap::new(), vec![], name_to_rva);
+        assert_eq!(pdb.function_name_to_va("bubble_sort"), Some(BASE + 0x3000));
+    }
+
+    #[test]
+    fn function_name_to_va_missing() {
+        assert!(empty_pdb().function_name_to_va("nonexistent").is_none());
     }
 }

@@ -14,10 +14,10 @@
 //!
 //! # Usage
 //! ```no_run
+//! # async fn example() {
 //! use win_debug_bridge::thread::WindowsDebugHandle;
 //! use runtime_core::session::DebugTarget;
 //!
-//! # tokio_test::block_on(async {
 //! let handle = WindowsDebugHandle::spawn().expect("debug init failed");
 //! let target = DebugTarget {
 //!     executable: r"C:\path\to\my_app.exe".into(),
@@ -26,7 +26,7 @@
 //!     working_dir: None,
 //! };
 //! let (pid, state) = handle.launch_process(target).await.unwrap();
-//! # });
+//! # }
 //! ```
 
 pub mod pdb_info;

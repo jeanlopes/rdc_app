@@ -129,3 +129,103 @@ impl Serializer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::variable::{ScalarValue, Variable, VariableValue};
+
+    fn make_var(name: &str, value: VariableValue) -> Variable {
+        Variable { name: name.to_string(), type_name: "test".to_string(), value, address: None, semantic: None }
+    }
+
+    fn ser() -> Serializer { Serializer::new(SerializerOpts::default()) }
+
+    fn limited(max_depth: u32, max_array: usize, max_string: usize) -> Serializer {
+        Serializer::new(SerializerOpts { max_depth, max_array_elements: max_array, max_string_bytes: max_string })
+    }
+
+    #[test]
+    fn serialize_bool_true() {
+        let v = ser().serialize_variable(&make_var("x", VariableValue::Scalar(ScalarValue::Bool(true))));
+        assert_eq!(v["value"], true);
+    }
+
+    #[test]
+    fn serialize_bool_false() {
+        let v = ser().serialize_variable(&make_var("x", VariableValue::Scalar(ScalarValue::Bool(false))));
+        assert_eq!(v["value"], false);
+    }
+
+    #[test]
+    fn serialize_int_negative() {
+        let v = ser().serialize_variable(&make_var("x", VariableValue::Scalar(ScalarValue::Int(-12))));
+        assert_eq!(v["value"], -12);
+    }
+
+    #[test]
+    fn serialize_string_within_limit() {
+        let v = limited(8, 256, 1024).serialize_variable(
+            &make_var("x", VariableValue::String { value: "hello".to_string(), truncated: false })
+        );
+        assert!(v["value"].get("$truncated").is_none() || v["value"]["$truncated"].is_null());
+    }
+
+    #[test]
+    fn serialize_string_over_limit() {
+        let v = limited(8, 256, 4).serialize_variable(
+            &make_var("x", VariableValue::String { value: "hello world!".to_string(), truncated: false })
+        );
+        assert_eq!(v["value"]["$truncated"], true);
+        assert!(v["value"]["total_bytes"].as_u64().unwrap() > 4);
+    }
+
+    #[test]
+    fn serialize_depth_limit() {
+        let inner = VariableValue::Scalar(ScalarValue::Int(1));
+        let level2 = VariableValue::Struct { fields: vec![Variable {
+            name: "inner".into(), type_name: "i32".into(), value: inner, address: None, semantic: None,
+        }]};
+        let level1 = VariableValue::Struct { fields: vec![Variable {
+            name: "level2".into(), type_name: "L2".into(), value: level2, address: None, semantic: None,
+        }]};
+        let v = limited(2, 256, 4096).serialize_variable(&make_var("root", level1));
+        assert_eq!(v["value"]["level2"]["inner"]["$depth_limit"], true);
+    }
+
+    #[test]
+    fn serialize_array_within_limit() {
+        let elems: Vec<VariableValue> = (0..5).map(|i| VariableValue::Scalar(ScalarValue::Int(i))).collect();
+        let v = limited(8, 10, 4096).serialize_variable(
+            &make_var("arr", VariableValue::Array { elements: elems, truncated: false, total: 5 })
+        );
+        assert!(v["value"].get("$truncated").is_none() || v["value"]["$truncated"] == false);
+    }
+
+    #[test]
+    fn serialize_array_over_limit() {
+        let elems: Vec<VariableValue> = (0..10).map(|i| VariableValue::Scalar(ScalarValue::Int(i))).collect();
+        let v = limited(8, 3, 4096).serialize_variable(
+            &make_var("arr", VariableValue::Array { elements: elems, truncated: false, total: 10 })
+        );
+        assert_eq!(v["value"]["$truncated"], true);
+        assert!(v["value"]["shown"].as_u64().is_some());
+        assert!(v["value"]["total"].as_u64().is_some());
+    }
+
+    #[test]
+    fn serialize_cyclic_ref() {
+        let addr = 0xdeadbeef_u64;
+        let v = ser().serialize_variable(&make_var("p", VariableValue::Pointer {
+            address: addr,
+            dereferenced: Some(Box::new(VariableValue::CyclicRef { address: addr })),
+        }));
+        assert!(v["value"]["dereferenced"]["$ref"].as_str().unwrap().starts_with("0x"));
+    }
+
+    #[test]
+    fn serialize_null_pointer() {
+        let v = ser().serialize_variable(&make_var("p", VariableValue::Pointer { address: 0, dereferenced: None }));
+        assert_eq!(v["value"]["null"], true);
+    }
+}

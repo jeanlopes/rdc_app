@@ -39,3 +39,38 @@ impl Breakpoint {
         self.enabled = !self.enabled;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_bp() -> Breakpoint {
+        Breakpoint {
+            id: 1,
+            kind: BreakpointKind::Address { addr: 0x1000 },
+            condition: None,
+            hit_count: 0,
+            enabled: true,
+            locations: vec![],
+        }
+    }
+
+    #[test]
+    fn breakpoint_hit_count_increments() {
+        let mut bp = make_bp();
+        bp.increment_hit_count();
+        assert_eq!(bp.hit_count, 1);
+        bp.increment_hit_count();
+        assert_eq!(bp.hit_count, 2);
+    }
+
+    #[test]
+    fn breakpoint_toggle_enabled() {
+        let mut bp = make_bp();
+        assert!(bp.enabled);
+        bp.toggle_enabled();
+        assert!(!bp.enabled);
+        bp.toggle_enabled();
+        assert!(bp.enabled);
+    }
+}

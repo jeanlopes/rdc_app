@@ -27,3 +27,29 @@ pub enum DebuggerError {
     #[error("protocol error: {0}")]
     ProtocolError(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_process_not_found_display() {
+        assert!(DebuggerError::ProcessNotFound.to_string().contains("process not found"));
+    }
+
+    #[test]
+    fn error_breakpoint_not_found_display() {
+        assert!(DebuggerError::BreakpointNotFound(5).to_string().contains("5"));
+    }
+
+    #[test]
+    fn error_invalid_state_display() {
+        let e = DebuggerError::InvalidState {
+            current: "Running".to_string(),
+            required: "Paused",
+        };
+        let s = e.to_string();
+        assert!(s.contains("Running"));
+        assert!(s.contains("Paused"));
+    }
+}

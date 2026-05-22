@@ -945,19 +945,113 @@ fn extract_panic_message(stderr: &str) -> Option<String> {
         // Try new format: "panicked at file:line:\nmessage"
         if let Some(newline_pos) = after.find('\n') {
             let message_start = &after[newline_pos + 1..];
-            let message = message_start.lines().next()?.trim();
-            if !message.is_empty() {
-                return Some(message.to_string());
+            if let Some(message) = message_start.lines().next() {
+                let trimmed = message.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
             }
         }
         // Try old format: "panicked at 'message', ..."
         if let Some(rest) = after.strip_prefix("panicked at '") {
-            let end = rest.find("', ")?;
-            return Some(rest[..end].to_string());
+            if let Some(end) = rest.find("', ") {
+                return Some(rest[..end].to_string());
+            }
         }
     }
 
-    // Fallback: return the whole stderr trimmed
-    let trimmed = stderr.trim();
-    if !trimmed.is_empty() { Some(trimmed.to_string()) } else { None }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_core::variable::{ScalarValue, VariableValue};
+
+    #[test]
+    fn bytes_bool_false() {
+        assert!(matches!(bytes_to_value(&[0x00], "bool", 0), VariableValue::Scalar(ScalarValue::Bool(false))));
+    }
+
+    #[test]
+    fn bytes_bool_true() {
+        assert!(matches!(bytes_to_value(&[0x01], "bool", 0), VariableValue::Scalar(ScalarValue::Bool(true))));
+    }
+
+    #[test]
+    fn bytes_i32_positive() {
+        assert!(matches!(bytes_to_value(&[0x2c, 0x00, 0x00, 0x00], "i32", 0), VariableValue::Scalar(ScalarValue::Int(44))));
+    }
+
+    #[test]
+    fn bytes_i32_negative() {
+        assert!(matches!(bytes_to_value(&[0xff, 0xff, 0xff, 0xff], "i32", 0), VariableValue::Scalar(ScalarValue::Int(-1))));
+    }
+
+    #[test]
+    fn bytes_u32() {
+        assert!(matches!(bytes_to_value(&[0x05, 0x00, 0x00, 0x00], "u32", 0), VariableValue::Scalar(ScalarValue::UInt(5))));
+    }
+
+    #[test]
+    fn bytes_usize() {
+        assert!(matches!(
+            bytes_to_value(&[0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], "usize", 0),
+            VariableValue::Scalar(ScalarValue::UInt(8))
+        ));
+    }
+
+    #[test]
+    fn bytes_f32() {
+        let bytes = 1.0f32.to_le_bytes();
+        if let VariableValue::Scalar(ScalarValue::Float(f)) = bytes_to_value(&bytes, "f32", 0) {
+            assert!((f - 1.0).abs() < f64::EPSILON);
+        } else {
+            panic!("expected Scalar(Float)");
+        }
+    }
+
+    #[test]
+    fn bytes_unknown_type_returns_opaque() {
+        if let VariableValue::Opaque { summary } = bytes_to_value(&[0x01, 0x02, 0x03, 0x04], "SomeStruct", 0) {
+            assert!(summary.contains("bytes"));
+        } else {
+            panic!("expected Opaque");
+        }
+    }
+
+    #[test]
+    fn panic_new_format() {
+        let input = "thread 'main' panicked at src\\main.rs:58:22:\nindex out of bounds: the len is 3 but the index is 99\n";
+        assert_eq!(
+            extract_panic_message(input),
+            Some("index out of bounds: the len is 3 but the index is 99".to_string())
+        );
+    }
+
+    #[test]
+    fn panic_old_format() {
+        let input = "thread 'main' panicked at 'index out of bounds: the len is 3', src\\main.rs:58:22\n";
+        assert_eq!(
+            extract_panic_message(input),
+            Some("index out of bounds: the len is 3".to_string())
+        );
+    }
+
+    #[test]
+    fn panic_empty_string_returns_none() {
+        assert_eq!(extract_panic_message(""), None);
+    }
+
+    #[test]
+    fn panic_unrelated_text_returns_none() {
+        assert_eq!(extract_panic_message("hello world\n"), None);
+    }
+
+    #[test]
+    fn panic_unwrap_on_none() {
+        let input = "thread 'main' panicked at src\\main.rs:3:5:\ncalled `Option::unwrap()` on a `None` value\n";
+        let msg = extract_panic_message(input).unwrap();
+        assert!(msg.contains("called `Option::unwrap()` on a `None` value"));
+    }
 }
