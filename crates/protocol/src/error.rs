@@ -18,3 +18,6 @@ pub fn to_mcp_error_code(err: &DebuggerError) -> i32 {
         _ => ERR_DEBUGGER,
     }
 }
+
+#[cfg(test)]
+mod tests {}
