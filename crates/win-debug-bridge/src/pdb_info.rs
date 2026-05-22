@@ -284,4 +284,30 @@ fn primitive_size_from_type_name(name: &str) -> usize {
 }
 
 #[cfg(test)]
-mod tests {}
+impl PdbInfo {
+    pub fn test_new(
+        image_base: u64,
+        rva_to_source: BTreeMap<u32, (PathBuf, u32)>,
+        line_to_rva: HashMap<(String, u32), u32>,
+        function_starts: Vec<(u32, String)>,
+        name_to_rva: HashMap<String, u32>,
+    ) -> Self {
+        PdbInfo { image_base, rva_to_source, line_to_rva, function_starts, locals: HashMap::new(), name_to_rva }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: u64 = 0x140000000;
+
+    fn empty_pdb() -> PdbInfo {
+        PdbInfo::test_new(BASE, BTreeMap::new(), HashMap::new(), vec![], HashMap::new())
+    }
+
+    #[test]
+    fn short_name_strips_hash() {
+        assert_eq!(short_name("bubble_sort::h1a2b3c4d"), "bubble_sort");
+    }
+}
