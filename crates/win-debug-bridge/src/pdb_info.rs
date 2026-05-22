@@ -358,4 +358,45 @@ mod tests {
         let pdb = empty_pdb();
         assert_eq!(pdb.va_to_rva(0x100), None);
     }
+
+    #[test]
+    fn va_to_source_exact_hit() {
+        let mut rva_to_source = BTreeMap::new();
+        rva_to_source.insert(0x1000u32, (PathBuf::from("main.rs"), 42u32));
+        let pdb = PdbInfo::test_new(BASE, rva_to_source, HashMap::new(), vec![], HashMap::new());
+        let loc = pdb.va_to_source(BASE + 0x1000).unwrap();
+        assert_eq!(loc.line, 42);
+    }
+
+    #[test]
+    fn va_to_source_nearest_within_range() {
+        let mut rva_to_source = BTreeMap::new();
+        rva_to_source.insert(0x1000u32, (PathBuf::from("main.rs"), 42u32));
+        let pdb = PdbInfo::test_new(BASE, rva_to_source, HashMap::new(), vec![], HashMap::new());
+        let loc = pdb.va_to_source(BASE + 0x1000 + 50).unwrap();
+        assert_eq!(loc.line, 42);
+    }
+
+    #[test]
+    fn va_to_source_too_far_returns_none() {
+        let mut rva_to_source = BTreeMap::new();
+        rva_to_source.insert(0x1000u32, (PathBuf::from("main.rs"), 42u32));
+        let pdb = PdbInfo::test_new(BASE, rva_to_source, HashMap::new(), vec![], HashMap::new());
+        assert!(pdb.va_to_source(BASE + 0x1000 + 300).is_none());
+    }
+
+    #[test]
+    fn va_to_function_name_found() {
+        let function_starts = vec![(0x2000u32, "my_func".to_string())];
+        let pdb = PdbInfo::test_new(BASE, BTreeMap::new(), HashMap::new(), function_starts, HashMap::new());
+        let name = pdb.va_to_function_name(BASE + 0x2000).unwrap();
+        assert_eq!(name, "my_func");
+    }
+
+    #[test]
+    fn va_to_function_name_not_found() {
+        let function_starts = vec![(0x2000u32, "my_func".to_string())];
+        let pdb = PdbInfo::test_new(BASE, BTreeMap::new(), HashMap::new(), function_starts, HashMap::new());
+        assert!(pdb.va_to_function_name(BASE + 0x100).is_none());
+    }
 }
