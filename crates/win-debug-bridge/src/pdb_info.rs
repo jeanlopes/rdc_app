@@ -320,4 +320,24 @@ mod tests {
     fn short_name_simple() {
         assert_eq!(short_name("main"), "main");
     }
+
+    #[test]
+    fn primitive_size_bool() {
+        assert_eq!(primitive_size_from_type_name("bool"), 1);
+    }
+
+    #[test]
+    fn primitive_size_i32() {
+        assert_eq!(primitive_size_from_type_name("i32"), 4);
+    }
+
+    #[test]
+    fn primitive_size_usize() {
+        assert_eq!(primitive_size_from_type_name("usize"), 8);
+    }
+
+    #[test]
+    fn primitive_size_unknown() {
+        assert_eq!(primitive_size_from_type_name("MyStruct"), 0);
+    }
 }
