@@ -310,4 +310,14 @@ mod tests {
     fn short_name_strips_hash() {
         assert_eq!(short_name("bubble_sort::h1a2b3c4d"), "bubble_sort");
     }
+
+    #[test]
+    fn short_name_takes_last_segment() {
+        assert_eq!(short_name("std::vec::Vec::push"), "push");
+    }
+
+    #[test]
+    fn short_name_simple() {
+        assert_eq!(short_name("main"), "main");
+    }
 }
