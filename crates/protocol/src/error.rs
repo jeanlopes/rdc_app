@@ -20,4 +20,13 @@ pub fn to_mcp_error_code(err: &DebuggerError) -> i32 {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use runtime_core::error::DebuggerError;
+
+    #[test]
+    fn invalid_state_maps_to_minus_32001() {
+        let e = DebuggerError::InvalidState { current: "".to_string(), required: "" };
+        assert_eq!(to_mcp_error_code(&e), -32001);
+    }
+}
