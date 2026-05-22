@@ -399,4 +399,30 @@ mod tests {
         let pdb = PdbInfo::test_new(BASE, BTreeMap::new(), HashMap::new(), function_starts, HashMap::new());
         assert!(pdb.va_to_function_name(BASE + 0x100).is_none());
     }
+
+    #[test]
+    fn source_to_va_round_trip() {
+        let mut line_to_rva = HashMap::new();
+        line_to_rva.insert(("main".to_string(), 42u32), 0x1000u32);
+        let pdb = PdbInfo::test_new(BASE, BTreeMap::new(), line_to_rva, vec![], HashMap::new());
+        assert_eq!(pdb.source_to_va(std::path::Path::new("main.rs"), 42), Some(BASE + 0x1000));
+    }
+
+    #[test]
+    fn source_to_va_unknown_returns_none() {
+        assert!(empty_pdb().source_to_va(std::path::Path::new("unknown.rs"), 1).is_none());
+    }
+
+    #[test]
+    fn function_name_to_va_exact() {
+        let mut name_to_rva = HashMap::new();
+        name_to_rva.insert("bubble_sort".to_string(), 0x3000u32);
+        let pdb = PdbInfo::test_new(BASE, BTreeMap::new(), HashMap::new(), vec![], name_to_rva);
+        assert_eq!(pdb.function_name_to_va("bubble_sort"), Some(BASE + 0x3000));
+    }
+
+    #[test]
+    fn function_name_to_va_missing() {
+        assert!(empty_pdb().function_name_to_va("nonexistent").is_none());
+    }
 }

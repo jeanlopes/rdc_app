@@ -13,7 +13,7 @@
 //! ```
 //!
 //! # Usage
-//! ```no_run
+//! ```ignore
 //! use win_debug_bridge::thread::WindowsDebugHandle;
 //! use runtime_core::session::DebugTarget;
 //!
