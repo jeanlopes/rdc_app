@@ -340,4 +340,22 @@ mod tests {
     fn primitive_size_unknown() {
         assert_eq!(primitive_size_from_type_name("MyStruct"), 0);
     }
+
+    #[test]
+    fn rva_to_va_adds_base() {
+        let pdb = empty_pdb();
+        assert_eq!(pdb.rva_to_va(0x1234), BASE + 0x1234);
+    }
+
+    #[test]
+    fn va_to_rva_subtracts_base() {
+        let pdb = empty_pdb();
+        assert_eq!(pdb.va_to_rva(BASE + 0x1234), Some(0x1234));
+    }
+
+    #[test]
+    fn va_to_rva_below_base_returns_none() {
+        let pdb = empty_pdb();
+        assert_eq!(pdb.va_to_rva(0x100), None);
+    }
 }
