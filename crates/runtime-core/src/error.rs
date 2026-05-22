@@ -27,3 +27,6 @@ pub enum DebuggerError {
     #[error("protocol error: {0}")]
     ProtocolError(String),
 }
+
+#[cfg(test)]
+mod tests {}
