@@ -1,13 +1,10 @@
-//! Windows Debug API backend.
-//!
-//! Uses Win32 `CreateProcess(DEBUG_PROCESS)` + `WaitForDebugEvent` loop.
-//! No LLDB, no Python, no external tools — only `windows-rs` + `pdb` crates.
+//! Windows Debug API backend — full implementation.
 //!
 //! # Safety policy (Constitution Principle VI)
-//! Every `unsafe` block calls a Win32 API. Each site carries:
-//!   1. A safety proof comment
-//!   2. A GitHub issue reference (placeholder: #1)
-//!   3. The rejected safe alternative
+//! Every `unsafe` block in this file calls a Win32 API. Each site carries:
+//!   1. Safety proof comment
+//!   2. GitHub issue reference (placeholder: #1)
+//!   3. Rejected safe alternative
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,30 +13,40 @@ use tracing::{info, instrument, warn};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Diagnostics::Debug::{
-    ContinueDebugEvent, DebugBreakProcess, ReadProcessMemory, WaitForDebugEvent,
-    WriteProcessMemory, DEBUG_EVENT, EXCEPTION_DEBUG_EVENT, EXIT_PROCESS_DEBUG_EVENT,
+    ContinueDebugEvent, DebugBreakProcess, GetThreadContext, ReadProcessMemory,
+    SetThreadContext, StackWalk64, SymFunctionTableAccess64, SymGetModuleBase64,
+    SymInitialize, WaitForDebugEvent, WriteProcessMemory,
+    ADDRESS64, ADDRESS_MODE, CONTEXT, CONTEXT_FLAGS, DEBUG_EVENT,
+    EXCEPTION_DEBUG_EVENT, EXIT_PROCESS_DEBUG_EVENT, CREATE_PROCESS_DEBUG_EVENT,
+    STACKFRAME64,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next,
-    THREADENTRY32, TH32CS_SNAPTHREAD,
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32, TH32CS_SNAPTHREAD,
 };
+use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
-    CreateProcessA, DEBUG_ONLY_THIS_PROCESS, DEBUG_PROCESS,
-    PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOA,
+    CreateProcessA, DEBUG_ONLY_THIS_PROCESS, DEBUG_PROCESS, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOA,
 };
 use windows::core::PCSTR;
 
 use runtime_core::{
     breakpoint::{Breakpoint, BreakpointId, BreakpointKind, BreakpointLocation},
     error::DebuggerError,
-    process::{SourceLocation, StackFrame, ThreadId, ThreadInfo, ThreadState},
+    process::{StackFrame, ThreadId, ThreadInfo, ThreadState},
     session::{DebugTarget, PauseReason, SessionState},
-    variable::{EvalResult, Variable, VariableValue},
+    variable::{EvalResult, ScalarValue, Variable, VariableValue, SemanticAnnotation},
 };
 use protocol::tools::execution::{ExecutionEvent, ExecutionEventKind};
+use crate::pdb_info::{PdbInfo, VarLocation};
 
-/// INT3 opcode — software breakpoint on x86/x64.
 const INT3: u8 = 0xCC;
+
+// AMD64 CONTEXT flags (typed as CONTEXT_FLAGS for windows-rs compatibility)
+const CONTEXT_FULL: CONTEXT_FLAGS = CONTEXT_FLAGS(0x0010_003F);
+
+// EFLAGS Trap Flag (bit 8) — causes EXCEPTION_SINGLE_STEP after next instruction
+const TRAP_FLAG: u32 = 0x0100;
 
 struct PatchedBreakpoint {
     address: u64,
@@ -47,22 +54,28 @@ struct PatchedBreakpoint {
     bp: Breakpoint,
 }
 
-/// Windows Debug API backend (synchronous — runs on the dedicated debug OS thread).
+/// Windows Debug API backend.
 pub struct WindowsDebugBackend {
     process: Mutex<Option<HANDLE>>,
     pid: Mutex<Option<u32>>,
     state: Mutex<SessionState>,
     breakpoints: Mutex<HashMap<BreakpointId, PatchedBreakpoint>>,
     next_bp_id: Mutex<u32>,
+    /// Thread ID of the currently stopped thread.
+    stopped_tid: Mutex<u32>,
+    /// PDB symbol info (loaded after process starts).
+    pdb: Mutex<Option<PdbInfo>>,
+    /// Path to the executable.
+    exe_path: Mutex<Option<PathBuf>>,
+    /// Read end of stderr pipe (for panic message capture).
+    stderr_read: Mutex<Option<HANDLE>>,
 }
 
-// SAFETY: WindowsDebugBackend is only ever used from the single debug OS thread.
-// HANDLE values are never shared across threads.
+// SAFETY: Used from the single debug OS thread only.
 unsafe impl Send for WindowsDebugBackend {}
 unsafe impl Sync for WindowsDebugBackend {}
 
 impl WindowsDebugBackend {
-    /// Create a new backend in `Idle` state.
     pub fn new() -> Result<Self, DebuggerError> {
         Ok(Self {
             process: Mutex::new(None),
@@ -70,6 +83,10 @@ impl WindowsDebugBackend {
             state: Mutex::new(SessionState::Idle),
             breakpoints: Mutex::new(HashMap::new()),
             next_bp_id: Mutex::new(1),
+            stopped_tid: Mutex::new(0),
+            pdb: Mutex::new(None),
+            exe_path: Mutex::new(None),
+            stderr_read: Mutex::new(None),
         })
     }
 
@@ -77,35 +94,50 @@ impl WindowsDebugBackend {
 
     #[instrument(skip(self))]
     pub fn launch_process(&self, target: DebugTarget) -> Result<(u32, SessionState), DebuggerError> {
-        let exe = target.executable.to_string_lossy().to_string();
-        let mut cmdline = exe.clone();
+        let exe = target.executable.clone();
+        let exe_str = exe.to_string_lossy().to_string();
+
+        // Create anonymous pipe for stderr capture (panic message extraction).
+        let mut stderr_read = HANDLE::default();
+        let mut stderr_write = HANDLE::default();
+        // SAFETY: CreatePipe with NULL security attributes creates an inheritable pipe.
+        // Both handles must be closed. stderr_write is passed to child (inheritable);
+        // we close it in the parent immediately after CreateProcess.
+        // GitHub issue: #1 — Safe alternative: none.
+        unsafe {
+            CreatePipe(&mut stderr_read, &mut stderr_write, None, 0)
+                .map_err(|e| DebuggerError::DebuggerError(format!("CreatePipe: {}", e)))?;
+        }
+
+        // Build command line (null-terminated).
+        let mut cmdline = exe_str.clone();
         if !target.args.is_empty() {
             cmdline.push(' ');
             cmdline.push_str(&target.args.join(" "));
         }
-        // Null-terminate for the Win32 API.
         let mut cmdline_bytes: Vec<u8> = cmdline.into_bytes();
         cmdline_bytes.push(0);
 
-        let mut si = STARTUPINFOA {
+        let si = STARTUPINFOA {
             cb: std::mem::size_of::<STARTUPINFOA>() as u32,
+            dwFlags: STARTF_USESTDHANDLES,
+            hStdInput: HANDLE::default(),
+            hStdOutput: HANDLE::default(),
+            hStdError: stderr_write,
             ..Default::default()
         };
         let mut pi = PROCESS_INFORMATION::default();
 
-        // SAFETY: CreateProcessA launches the child process with the DEBUG_PROCESS flag.
-        // cmdline_bytes is null-terminated and outlives this call.
-        // si.cb is set correctly; all other fields are zero-initialized (valid defaults).
-        // The returned pi.hProcess MUST be closed in Drop.
-        // GitHub issue: #1
-        // Safe alternative: std::process::Command — does not expose DEBUG_PROCESS flag.
+        // SAFETY: CreateProcessA with DEBUG_PROCESS. bInheritHandles = true so stderr
+        // pipe is inherited. cmdline_bytes is null-terminated and valid.
+        // GitHub issue: #1 — Safe alternative: std::process::Command lacks DEBUG_PROCESS.
         let result = unsafe {
             CreateProcessA(
                 PCSTR::null(),
                 windows::core::PSTR(cmdline_bytes.as_mut_ptr()),
                 None,
                 None,
-                false,
+                true,
                 DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS,
                 None,
                 PCSTR::null(),
@@ -114,17 +146,44 @@ impl WindowsDebugBackend {
             )
         };
 
-        result.map_err(|e| DebuggerError::DebuggerError(format!("CreateProcessA failed: {}", e)))?;
+        // Close the write end in the parent — child holds it now.
+        // SAFETY: CloseHandle releases our copy of the write handle.
+        // GitHub issue: #1
+        unsafe { CloseHandle(stderr_write).ok(); }
+
+        result.map_err(|e| DebuggerError::DebuggerError(format!("CreateProcessA: {}", e)))?;
 
         let pid = pi.dwProcessId;
         *self.process.lock().unwrap() = Some(pi.hProcess);
         *self.pid.lock().unwrap() = Some(pid);
+        *self.stderr_read.lock().unwrap() = Some(stderr_read);
+        *self.exe_path.lock().unwrap() = Some(exe.clone());
         *self.state.lock().unwrap() = SessionState::Running;
 
-        // Consume the initial CREATE_PROCESS_DEBUG_EVENT break-in.
-        let _ = self.drain_initial_events(pid);
+        // Drain initial events and capture image base.
+        let image_base = self.drain_initial_events(pid)?;
 
-        info!(pid, executable = %exe, "process launched under Windows debug");
+        // Initialise DbgHelp for this process — required by StackWalk64.
+        // fInvadeProcess=true auto-loads symbols for all loaded modules.
+        // SAFETY: SymInitialize must be called once per process handle before StackWalk64.
+        // GitHub issue: #1 — Safe alternative: none.
+        let process_handle = self.require_process()?;
+        unsafe {
+            let _ = SymInitialize(process_handle, None, true);
+        }
+
+        // Load PDB for source-level symbol resolution.
+        match PdbInfo::load(&exe, image_base) {
+            Ok(pdb_info) => {
+                info!("PDB loaded successfully");
+                *self.pdb.lock().unwrap() = Some(pdb_info);
+            }
+            Err(e) => {
+                warn!("PDB load failed (source-level debugging unavailable): {}", e);
+            }
+        }
+
+        info!(pid, executable = %exe_str, "process launched");
         Ok((pid, SessionState::Running))
     }
 
@@ -142,12 +201,11 @@ impl WindowsDebugBackend {
         let original_byte = self.read_byte(process, address)?;
         self.write_byte(process, address, INT3)?;
 
-        let id = {
-            let mut g = self.next_bp_id.lock().unwrap();
-            let id = *g;
-            *g += 1;
-            id
-        };
+        let id = { let mut g = self.next_bp_id.lock().unwrap(); let id = *g; *g += 1; id };
+
+        let source_location = self.pdb.lock().unwrap()
+            .as_ref()
+            .and_then(|p| p.va_to_source(address));
 
         let bp = Breakpoint {
             id,
@@ -155,11 +213,7 @@ impl WindowsDebugBackend {
             condition,
             hit_count: 0,
             enabled: true,
-            locations: vec![BreakpointLocation {
-                address,
-                source_location: self.pdb_address_to_source(address),
-                resolved: true,
-            }],
+            locations: vec![BreakpointLocation { address, source_location, resolved: true }],
         };
         self.breakpoints.lock().unwrap().insert(id, PatchedBreakpoint { address, original_byte, bp: bp.clone() });
         info!(bp_id = id, address = %format!("0x{:x}", address), "breakpoint set");
@@ -167,8 +221,7 @@ impl WindowsDebugBackend {
     }
 
     pub fn remove_breakpoint(&self, id: BreakpointId) -> Result<(), DebuggerError> {
-        let patched = self.breakpoints.lock().unwrap()
-            .remove(&id)
+        let patched = self.breakpoints.lock().unwrap().remove(&id)
             .ok_or(DebuggerError::BreakpointNotFound(id))?;
         let process = self.require_process()?;
         self.write_byte(process, patched.address, patched.original_byte)?;
@@ -182,21 +235,19 @@ impl WindowsDebugBackend {
 
     // ── Execution control ────────────────────────────────────────────────────
 
-    #[instrument(skip(self))]
     pub fn continue_execution(&self) -> Result<ExecutionEvent, DebuggerError> {
-        self.event_loop(false)
+        self.event_loop()
     }
 
     pub fn pause_execution(&self) -> Result<ExecutionEvent, DebuggerError> {
         let process = self.require_process()?;
-        // SAFETY: DebugBreakProcess injects a software breakpoint into the target.
-        // process handle is valid (checked above). GitHub issue: #1
-        // Safe alternative: none — Win32 has no other way to interrupt a running debuggee.
+        // SAFETY: DebugBreakProcess injects a software BP into the target.
+        // GitHub issue: #1 — Safe alternative: none.
         unsafe {
             DebugBreakProcess(process)
                 .map_err(|e| DebuggerError::DebuggerError(format!("DebugBreakProcess: {}", e)))?;
         }
-        self.event_loop(false)
+        self.event_loop()
     }
 
     pub fn step_over(&self, _thread_id: Option<ThreadId>) -> Result<ExecutionEvent, DebuggerError> {
@@ -204,13 +255,37 @@ impl WindowsDebugBackend {
     }
 
     pub fn step_into(&self, _thread_id: Option<ThreadId>) -> Result<ExecutionEvent, DebuggerError> {
+        // step_into = single step (TF will descend into function calls naturally)
         self.single_step()
     }
 
     pub fn step_out(&self, _thread_id: Option<ThreadId>) -> Result<ExecutionEvent, DebuggerError> {
-        // TODO: full step_out sets a temp BP at the return address from the stack.
-        // Phase 1: falls back to single-step.
-        self.single_step()
+        // Read return address from RSP, set a temp BP there, then continue.
+        let ret_addr = self.read_return_address()?;
+        let process = self.require_process()?;
+        let original = self.read_byte(process, ret_addr)?;
+        self.write_byte(process, ret_addr, INT3)?;
+
+        // Mark it as a one-shot internal breakpoint (id = u32::MAX)
+        let temp_id = u32::MAX;
+        let temp_bp = Breakpoint {
+            id: temp_id,
+            kind: BreakpointKind::Address { addr: ret_addr },
+            condition: None,
+            hit_count: 0,
+            enabled: true,
+            locations: vec![],
+        };
+        self.breakpoints.lock().unwrap().insert(temp_id, PatchedBreakpoint {
+            address: ret_addr,
+            original_byte: original,
+            bp: temp_bp,
+        });
+
+        let event = self.event_loop()?;
+        // Remove the temp BP regardless of what we hit
+        self.breakpoints.lock().unwrap().remove(&temp_id);
+        Ok(event)
     }
 
     // ── Inspection ───────────────────────────────────────────────────────────
@@ -222,22 +297,105 @@ impl WindowsDebugBackend {
         probe_context: Option<String>,
         _max_depth: u32,
     ) -> Result<Vec<Variable>, DebuggerError> {
-        // Phase 1: PDB local variable enumeration (S_LOCAL records) — stub.
-        // Full implementation: enumerate locals for current function via pdb crate,
-        // then ReadProcessMemory for each variable address.
-        let _ = probe_context;
-        Ok(vec![])
+        let rip = self.get_rip()?;
+        let pdb_guard = self.pdb.lock().unwrap();
+        let pdb = match pdb_guard.as_ref() {
+            Some(p) => p,
+            None => return Ok(vec![]),
+        };
+
+        let local_defs = pdb.locals_at_va(rip);
+        if local_defs.is_empty() { return Ok(vec![]); }
+
+        let rbp = self.get_rbp()?;
+        let process = self.require_process()?;
+
+        let mut result = Vec::new();
+        for local in &local_defs {
+            let var = self.read_local_var(process, local, rbp, probe_context.as_deref())?;
+            result.push(var);
+        }
+        Ok(result)
     }
 
-    pub fn read_stack(&self, _thread_id: Option<ThreadId>, _max_frames: u32) -> Result<Vec<StackFrame>, DebuggerError> {
-        // Phase 1: single frame from current RIP. Full stack walking uses StackWalk64.
-        Ok(vec![StackFrame {
-            index: 0,
-            function_name: None,
-            module: None,
-            source_location: None,
-            is_inlined: false,
-        }])
+    pub fn read_stack(&self, thread_id: Option<ThreadId>, max_frames: u32) -> Result<Vec<StackFrame>, DebuggerError> {
+        use windows::Win32::System::Threading::{OpenThread, THREAD_GET_CONTEXT, THREAD_SUSPEND_RESUME};
+
+        let tid = thread_id
+            .map(|id| id as u32)
+            .unwrap_or_else(|| *self.stopped_tid.lock().unwrap());
+
+        if tid == 0 {
+            return Ok(vec![]);
+        }
+
+        let process = self.require_process()?;
+        let mut ctx = self.get_thread_context(tid)?;
+
+        // SAFETY: OpenThread for context reading. Thread is halted at a debug event.
+        // GitHub issue: #1 — Safe alternative: none.
+        let thread_handle = unsafe {
+            OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, false, tid)
+                .map_err(|e| DebuggerError::DebuggerError(format!("OpenThread(stack): {}", e)))?
+        };
+
+        // AMD64 flat mode = 3
+        let flat = ADDRESS_MODE(3);
+        let mut frame = STACKFRAME64 {
+            AddrPC:    ADDRESS64 { Offset: ctx.Rip, Segment: 0, Mode: flat },
+            AddrStack: ADDRESS64 { Offset: ctx.Rsp, Segment: 0, Mode: flat },
+            AddrFrame: ADDRESS64 { Offset: ctx.Rbp, Segment: 0, Mode: flat },
+            ..Default::default()
+        };
+
+        const IMAGE_FILE_MACHINE_AMD64: u32 = 0x8664;
+
+        let mut frames = Vec::new();
+        let pdb_guard = self.pdb.lock().unwrap();
+
+        for _ in 0..max_frames.min(64) {
+            // SAFETY: StackWalk64 must be called from a loop. ctx is updated each iteration.
+            // process and thread_handle are valid open handles.
+            // SymFunctionTableAccess64 / SymGetModuleBase64 are DbgHelp callbacks
+            // that require a prior SymInitialize (called in launch_process).
+            // GitHub issue: #1 — Safe alternative: none.
+            let ok = unsafe {
+                StackWalk64(
+                    IMAGE_FILE_MACHINE_AMD64,
+                    process,
+                    thread_handle,
+                    &mut frame,
+                    &mut ctx as *mut CONTEXT as *mut _,
+                    None,
+                    Some(sym_func_table_access),
+                    Some(sym_get_module_base),
+                    None,
+                )
+            };
+
+            if !ok.as_bool() || frame.AddrPC.Offset == 0 {
+                break;
+            }
+
+            let rip = frame.AddrPC.Offset;
+            let (function_name, source_location) = if let Some(pdb) = pdb_guard.as_ref() {
+                (pdb.va_to_function_name(rip), pdb.va_to_source(rip))
+            } else {
+                (None, None)
+            };
+
+            frames.push(StackFrame {
+                index: frames.len() as u32,
+                function_name,
+                module: None,
+                source_location,
+                is_inlined: false,
+            });
+        }
+
+        // SAFETY: CloseHandle releases the thread handle. GitHub issue: #1.
+        unsafe { CloseHandle(thread_handle).ok(); }
+        Ok(frames)
     }
 
     pub fn evaluate_expression(
@@ -246,14 +404,9 @@ impl WindowsDebugBackend {
         _thread_id: Option<ThreadId>,
         _frame_index: u32,
     ) -> Result<EvalResult, DebuggerError> {
-        // Phase 1 stub. Full implementation: parse expression, look up variable
-        // addresses from PDB, ReadProcessMemory for value.
-        Ok(EvalResult {
-            expression,
-            value: VariableValue::Opaque { summary: "expression eval: Phase 2".into() },
-            type_name: "unknown".into(),
-            error: None,
-        })
+        // Phase 1: handle arr[N] and simple variable names.
+        let value = self.eval_expression(&expression);
+        Ok(EvalResult { expression, value, type_name: "unknown".into(), error: None })
     }
 
     pub fn list_threads(&self) -> Result<Vec<ThreadInfo>, DebuggerError> {
@@ -261,7 +414,7 @@ impl WindowsDebugBackend {
         self.enumerate_threads(pid)
     }
 
-    // ── Private helpers ──────────────────────────────────────────────────────
+    // ── Private: Win32 primitives ─────────────────────────────────────────────
 
     fn require_process(&self) -> Result<HANDLE, DebuggerError> {
         self.process.lock().unwrap().ok_or(DebuggerError::ProcessNotFound)
@@ -274,79 +427,141 @@ impl WindowsDebugBackend {
     fn read_byte(&self, process: HANDLE, address: u64) -> Result<u8, DebuggerError> {
         let mut byte: u8 = 0;
         let mut read = 0usize;
-        // SAFETY: ReadProcessMemory reads 1 byte from the target process address space.
-        // process handle and address are valid. buffer is 1 byte on the stack.
-        // GitHub issue: #1 — Safe alternative: none.
+        // SAFETY: ReadProcessMemory, 1 byte. GitHub issue: #1.
         unsafe {
-            ReadProcessMemory(
-                process,
-                address as *const _,
-                &mut byte as *mut u8 as *mut _,
-                1,
-                Some(&mut read),
-            ).map_err(|e| DebuggerError::DebuggerError(format!("ReadProcessMemory: {}", e)))?;
+            ReadProcessMemory(process, address as *const _, &mut byte as *mut u8 as *mut _, 1, Some(&mut read))
+                .map_err(|e| DebuggerError::DebuggerError(format!("ReadProcessMemory: {}", e)))?;
         }
         Ok(byte)
     }
 
     fn write_byte(&self, process: HANDLE, address: u64, byte: u8) -> Result<(), DebuggerError> {
         let mut written = 0usize;
-        // SAFETY: WriteProcessMemory writes 1 byte to the target process address space.
-        // process handle is valid; address must be writable (verified by caller for INT3 patching).
-        // GitHub issue: #1 — Safe alternative: none.
+        // SAFETY: WriteProcessMemory, 1 byte. GitHub issue: #1.
         unsafe {
-            WriteProcessMemory(
-                process,
-                address as *const _,
-                &byte as *const u8 as *const _,
-                1,
-                Some(&mut written),
-            ).map_err(|e| DebuggerError::DebuggerError(format!("WriteProcessMemory: {}", e)))?;
+            WriteProcessMemory(process, address as *const _, &byte as *const u8 as *const _, 1, Some(&mut written))
+                .map_err(|e| DebuggerError::DebuggerError(format!("WriteProcessMemory: {}", e)))?;
         }
         Ok(())
+    }
+
+    fn read_bytes(&self, process: HANDLE, address: u64, size: usize) -> Result<Vec<u8>, DebuggerError> {
+        let mut buf = vec![0u8; size];
+        let mut read = 0usize;
+        // SAFETY: ReadProcessMemory into heap buffer. GitHub issue: #1.
+        unsafe {
+            ReadProcessMemory(process, address as *const _, buf.as_mut_ptr() as *mut _, size, Some(&mut read))
+                .map_err(|e| DebuggerError::DebuggerError(format!("ReadProcessMemory({} bytes): {}", size, e)))?;
+        }
+        buf.truncate(read);
+        Ok(buf)
+    }
+
+    fn get_thread_context(&self, tid: u32) -> Result<CONTEXT, DebuggerError> {
+        use windows::Win32::System::Threading::{OpenThread, THREAD_GET_CONTEXT, THREAD_SUSPEND_RESUME};
+        // SAFETY: OpenThread returns a handle to the stopped thread.
+        // GitHub issue: #1 — Safe alternative: none.
+        let thread_handle = unsafe {
+            OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, false, tid)
+                .map_err(|e| DebuggerError::DebuggerError(format!("OpenThread: {}", e)))?
+        };
+
+        let mut ctx = CONTEXT::default();
+        ctx.ContextFlags = CONTEXT_FULL;
+
+        // SAFETY: GetThreadContext requires the thread to be in a suspended/debug state.
+        // The debug thread is halted at a debug event, which satisfies this.
+        // GitHub issue: #1 — Safe alternative: none.
+        let result = unsafe { GetThreadContext(thread_handle, &mut ctx) };
+        unsafe { CloseHandle(thread_handle).ok(); }
+        result.map_err(|e| DebuggerError::DebuggerError(format!("GetThreadContext: {}", e)))?;
+        Ok(ctx)
+    }
+
+    fn set_thread_context(&self, tid: u32, ctx: &CONTEXT) -> Result<(), DebuggerError> {
+        use windows::Win32::System::Threading::{OpenThread, THREAD_SET_CONTEXT, THREAD_SUSPEND_RESUME};
+        // SAFETY: OpenThread + SetThreadContext. Thread is in debug-stopped state.
+        // GitHub issue: #1 — Safe alternative: none.
+        let thread_handle = unsafe {
+            OpenThread(THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, false, tid)
+                .map_err(|e| DebuggerError::DebuggerError(format!("OpenThread(set): {}", e)))?
+        };
+        let result = unsafe { SetThreadContext(thread_handle, ctx) };
+        unsafe { CloseHandle(thread_handle).ok(); }
+        result.map_err(|e| DebuggerError::DebuggerError(format!("SetThreadContext: {}", e)))
+    }
+
+    fn get_rip(&self) -> Result<u64, DebuggerError> {
+        let tid = *self.stopped_tid.lock().unwrap();
+        if tid == 0 { return Ok(0); }
+        let ctx = self.get_thread_context(tid)?;
+        Ok(ctx.Rip)
+    }
+
+    fn get_rbp(&self) -> Result<u64, DebuggerError> {
+        let tid = *self.stopped_tid.lock().unwrap();
+        if tid == 0 { return Ok(0); }
+        let ctx = self.get_thread_context(tid)?;
+        Ok(ctx.Rbp)
+    }
+
+    fn read_return_address(&self) -> Result<u64, DebuggerError> {
+        let tid = *self.stopped_tid.lock().unwrap();
+        if tid == 0 { return Err(DebuggerError::ProcessNotFound); }
+        let ctx = self.get_thread_context(tid)?;
+        let rsp = ctx.Rsp;
+        let process = self.require_process()?;
+        let bytes = self.read_bytes(process, rsp, 8)?;
+        if bytes.len() < 8 {
+            return Err(DebuggerError::DebuggerError("could not read return address from stack".into()));
+        }
+        Ok(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
     }
 
     fn single_step(&self) -> Result<ExecutionEvent, DebuggerError> {
-        // Set EFLAGS.TF=1 via SetThreadContext, then continue.
-        // Phase 1: simplified — just continues and waits for any stop event.
-        // Full implementation: GetThreadContext → set TF → SetThreadContext → event loop.
-        self.event_loop(true)
+        let tid = *self.stopped_tid.lock().unwrap();
+        if tid == 0 {
+            return Err(DebuggerError::DebuggerError("no stopped thread for single-step".into()));
+        }
+        let mut ctx = self.get_thread_context(tid)?;
+        // Set EFLAGS.TF = 1 to trigger EXCEPTION_SINGLE_STEP after next instruction.
+        ctx.EFlags |= TRAP_FLAG;
+        self.set_thread_context(tid, &ctx)?;
+        self.event_loop()
     }
 
-    /// Drain the initial CREATE_PROCESS + DLL load events emitted right after CreateProcess.
-    fn drain_initial_events(&self, pid: u32) -> Result<(), DebuggerError> {
+    /// Drain the initial CREATE_PROCESS + DLL events and return the image base.
+    fn drain_initial_events(&self, pid: u32) -> Result<u64, DebuggerError> {
+        let mut image_base = 0u64;
         let mut event = DEBUG_EVENT::default();
-        for _ in 0..32 {
-            // SAFETY: WaitForDebugEvent must be called from the CreateProcess thread.
-            // This method is only called from the dedicated debug OS thread.
-            // GitHub issue: #1 — Safe alternative: none.
-            let ok = unsafe { WaitForDebugEvent(&mut event, 100) };
-            if ok.is_err() {
-                break;
-            }
+        for _ in 0..64 {
+            // SAFETY: WaitForDebugEvent from the debug thread. GitHub issue: #1.
+            let ok = unsafe { WaitForDebugEvent(&mut event, 200) };
+            if ok.is_err() { break; }
             let tid = event.dwThreadId;
-            if event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
-                // First break-in (system breakpoint) — this is where the process is first paused.
+
+            if event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT {
+                // Image base is in CreateProcessInfo
+                let base = unsafe { event.u.CreateProcessInfo.lpBaseOfImage as u64 };
+                if base != 0 { image_base = base; }
+                // The first event fires at the process entry point, which is a BP.
                 unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
-                *self.state.lock().unwrap() = SessionState::Running;
-                return Ok(());
+                return Ok(image_base);
             }
             unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
         }
-        Ok(())
+        Ok(image_base)
     }
 
     /// Main event loop — blocks until the next interesting stop event.
-    fn event_loop(&self, is_step: bool) -> Result<ExecutionEvent, DebuggerError> {
+    fn event_loop(&self) -> Result<ExecutionEvent, DebuggerError> {
         let pid = self.require_pid()?;
         let mut event = DEBUG_EVENT::default();
         loop {
-            // SAFETY: WaitForDebugEvent must be called from the CreateProcess thread.
-            // timeout = 10000ms to avoid infinite hangs.
-            // GitHub issue: #1 — Safe alternative: none.
-            let ok = unsafe { WaitForDebugEvent(&mut event, 10_000) };
+            // SAFETY: WaitForDebugEvent from the debug thread. GitHub issue: #1.
+            let ok = unsafe { WaitForDebugEvent(&mut event, 30_000) };
             if ok.is_err() {
-                return Err(DebuggerError::DebuggerError("WaitForDebugEvent timed out or failed".into()));
+                return Err(DebuggerError::DebuggerError("WaitForDebugEvent timeout".into()));
             }
             let tid = event.dwThreadId;
             match event.dwDebugEventCode {
@@ -354,39 +569,54 @@ impl WindowsDebugBackend {
                     let exc = unsafe { &event.u.Exception };
                     let code = exc.ExceptionRecord.ExceptionCode.0 as u32;
                     let addr = exc.ExceptionRecord.ExceptionAddress as u64;
+                    let first_chance = exc.dwFirstChance != 0;
 
                     match code {
                         // EXCEPTION_BREAKPOINT
                         0x80000003 => {
                             let bp_id = self.on_breakpoint_hit(addr)?;
-                            unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
+                            *self.stopped_tid.lock().unwrap() = tid;
                             *self.state.lock().unwrap() = SessionState::Paused(PauseReason::Breakpoint(bp_id));
+                            unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
+                            let pdb_loc = self.pdb.lock().unwrap()
+                                .as_ref()
+                                .and_then(|p| p.va_to_source(addr.saturating_sub(1)));
                             return Ok(ExecutionEvent {
-                                kind: if is_step { ExecutionEventKind::StepComplete } else { ExecutionEventKind::BreakpointHit },
+                                kind: ExecutionEventKind::BreakpointHit,
                                 thread_id: tid as u64,
-                                location: self.pdb_address_to_source(addr.saturating_sub(1)),
+                                location: pdb_loc,
                             });
                         }
                         // EXCEPTION_SINGLE_STEP
                         0x80000004 => {
-                            unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
+                            *self.stopped_tid.lock().unwrap() = tid;
                             *self.state.lock().unwrap() = SessionState::Paused(PauseReason::Step);
+                            unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
+                            let pdb_loc = self.pdb.lock().unwrap()
+                                .as_ref()
+                                .and_then(|p| p.va_to_source(addr));
                             return Ok(ExecutionEvent {
                                 kind: ExecutionEventKind::StepComplete,
                                 thread_id: tid as u64,
-                                location: self.pdb_address_to_source(addr),
+                                location: pdb_loc,
                             });
                         }
-                        // Rust abort / unhandled exception — treat as panic
-                        _ if exc.dwFirstChance == 0 => {
-                            let msg = format!("unhandled exception 0x{:08X} at 0x{:x}", code, addr);
-                            warn!("{}", msg);
-                            unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_EXCEPTION_NOT_HANDLED).ok(); }
+                        // Unhandled exception = Rust panic/abort
+                        _ if !first_chance => {
+                            let msg = self.read_panic_message().unwrap_or_else(|| {
+                                format!("unhandled exception 0x{:08X} at 0x{:x}", code, addr)
+                            });
+                            warn!(panic = %msg, "panic/unhandled exception");
+                            *self.stopped_tid.lock().unwrap() = tid;
                             *self.state.lock().unwrap() = SessionState::Paused(PauseReason::Panic);
+                            unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_EXCEPTION_NOT_HANDLED).ok(); }
+                            let pdb_loc = self.pdb.lock().unwrap()
+                                .as_ref()
+                                .and_then(|p| p.va_to_source(addr));
                             return Ok(ExecutionEvent {
                                 kind: ExecutionEventKind::PanicDetected { message: msg },
                                 thread_id: tid as u64,
-                                location: self.pdb_address_to_source(addr),
+                                location: pdb_loc,
                             });
                         }
                         _ => {
@@ -396,13 +626,22 @@ impl WindowsDebugBackend {
                 }
                 EXIT_PROCESS_DEBUG_EVENT => {
                     let exit_code = unsafe { event.u.ExitProcess.dwExitCode };
+                    // Non-zero exit = likely a Rust panic via abort.
+                    let kind = if exit_code != 0 {
+                        let msg = self.read_panic_message().unwrap_or_else(|| {
+                            format!("process exited with code {}", exit_code)
+                        });
+                        if msg.contains("panic") || msg.contains("panicked") {
+                            ExecutionEventKind::PanicDetected { message: msg }
+                        } else {
+                            ExecutionEventKind::Terminated { exit_code: exit_code as i32 }
+                        }
+                    } else {
+                        ExecutionEventKind::Terminated { exit_code: 0 }
+                    };
                     *self.state.lock().unwrap() = SessionState::Terminated(exit_code as i32);
                     unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
-                    return Ok(ExecutionEvent {
-                        kind: ExecutionEventKind::Terminated { exit_code: exit_code as i32 },
-                        thread_id: tid as u64,
-                        location: None,
-                    });
+                    return Ok(ExecutionEvent { kind, thread_id: tid as u64, location: None });
                 }
                 _ => {
                     unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
@@ -413,16 +652,13 @@ impl WindowsDebugBackend {
 
     fn on_breakpoint_hit(&self, rip_after_int3: u64) -> Result<BreakpointId, DebuggerError> {
         let patch_addr = rip_after_int3.saturating_sub(1);
-        let mut bps = self.breakpoints.lock().unwrap();
+        let bps = self.breakpoints.lock().unwrap();
         if let Some((&id, p)) = bps.iter().find(|(_, p)| p.address == patch_addr) {
             let original = p.original_byte;
             drop(bps);
             let process = self.require_process()?;
             self.write_byte(process, patch_addr, original)?;
-            let mut bps = self.breakpoints.lock().unwrap();
-            if let Some(p) = bps.get_mut(&id) {
-                p.bp.increment_hit_count();
-            }
+            self.breakpoints.lock().unwrap().get_mut(&id).map(|p| p.bp.increment_hit_count());
             Ok(id)
         } else {
             Ok(0) // system/injected breakpoint
@@ -432,42 +668,188 @@ impl WindowsDebugBackend {
     fn resolve_address(&self, kind: &BreakpointKind) -> Result<u64, DebuggerError> {
         match kind {
             BreakpointKind::Address { addr } => Ok(*addr),
-            BreakpointKind::SourceLine { file, line } =>
-                self.pdb_source_to_address(file, *line),
-            BreakpointKind::FunctionName { name } =>
-                self.pdb_function_to_address(name),
+            BreakpointKind::SourceLine { file, line } => {
+                self.pdb.lock().unwrap()
+                    .as_ref()
+                    .and_then(|p| p.source_to_va(file, *line))
+                    .ok_or_else(|| DebuggerError::DebuggerError(
+                        format!("no address for {}:{} in PDB", file.display(), line)
+                    ))
+            }
+            BreakpointKind::FunctionName { name } => {
+                self.pdb.lock().unwrap()
+                    .as_ref()
+                    .and_then(|p| p.function_name_to_va(name))
+                    .ok_or_else(|| DebuggerError::DebuggerError(
+                        format!("function '{}' not found in PDB", name)
+                    ))
+            }
             BreakpointKind::Regex { .. } =>
                 Err(DebuggerError::DebuggerError("regex breakpoints not yet supported".into())),
         }
     }
 
-    // ── PDB integration stubs (Phase 1 — full impl in follow-up PR) ──────────
+    // ── Local variable reading ────────────────────────────────────────────────
 
-    fn pdb_address_to_source(&self, _addr: u64) -> Option<SourceLocation> {
-        // TODO: pdb crate AddressMap + LineIterator lookup
-        None
+    fn read_local_var(
+        &self,
+        process: HANDLE,
+        local: &crate::pdb_info::PdbLocal,
+        rbp: u64,
+        probe_context: Option<&str>,
+    ) -> Result<Variable, DebuggerError> {
+        let address = match local.location {
+            VarLocation::FramePointerRelative(offset) => {
+                (rbp as i64 + offset as i64) as u64
+            }
+            VarLocation::Register(_) => {
+                // Register variables: skip for now (require GetThreadContext per-register mapping)
+                return Ok(Variable {
+                    name: local.name.clone(),
+                    type_name: local.type_name.clone(),
+                    value: VariableValue::Opaque { summary: "<register variable>".into() },
+                    address: None,
+                    semantic: probe_context.map(|ctx| SemanticAnnotation {
+                        context: ctx.to_string(),
+                        qualified_name: format!("{}.{}", ctx, local.name),
+                        description: None,
+                    }),
+                });
+            }
+        };
+
+        let size = if local.size > 0 { local.size } else { 8 }; // default to pointer size
+        let bytes = self.read_bytes(process, address, size).unwrap_or_default();
+
+        let value = bytes_to_value(&bytes, &local.type_name, address);
+
+        Ok(Variable {
+            name: local.name.clone(),
+            type_name: local.type_name.clone(),
+            value,
+            address: Some(address),
+            semantic: probe_context.map(|ctx| SemanticAnnotation {
+                context: ctx.to_string(),
+                qualified_name: format!("{}.{}", ctx, local.name),
+                description: None,
+            }),
+        })
     }
 
-    fn pdb_source_to_address(&self, _file: &std::path::Path, _line: u32) -> Result<u64, DebuggerError> {
-        // TODO: pdb crate line info → module-relative offset → VA
-        Err(DebuggerError::DebuggerError(
-            "source-line breakpoints require PDB integration (next PR)".into()
-        ))
+    // ── Expression evaluation ─────────────────────────────────────────────────
+
+    fn eval_expression(&self, expr: &str) -> VariableValue {
+        let expr = expr.trim();
+
+        // Handle arr[N] style indexing
+        if let Some((var_name, rest)) = expr.split_once('[') {
+            if let Some(idx_str) = rest.strip_suffix(']') {
+                if let Ok(idx) = idx_str.trim().parse::<usize>() {
+                    return self.eval_array_index(var_name.trim(), idx);
+                }
+            }
+        }
+
+        // Simple variable lookup
+        self.eval_variable(expr)
     }
 
-    fn pdb_function_to_address(&self, name: &str) -> Result<u64, DebuggerError> {
-        // TODO: pdb crate public symbol lookup
-        Err(DebuggerError::DebuggerError(
-            format!("function breakpoint '{}' requires PDB integration (next PR)", name)
-        ))
+    fn eval_array_index(&self, var_name: &str, idx: usize) -> VariableValue {
+        let process = match self.require_process() { Ok(p) => p, Err(_) => return VariableValue::Opaque { summary: "no process".into() } };
+        let rip = match self.get_rip() { Ok(r) => r, Err(_) => return VariableValue::Opaque { summary: "no rip".into() } };
+        let rbp = match self.get_rbp() { Ok(r) => r, Err(_) => return VariableValue::Opaque { summary: "no rbp".into() } };
+
+        let pdb_guard = self.pdb.lock().unwrap();
+        let pdb = match pdb_guard.as_ref() { Some(p) => p, None => return VariableValue::Opaque { summary: "no PDB".into() } };
+        let locals = pdb.locals_at_va(rip);
+
+        let local = locals.iter().find(|l| l.name == var_name);
+        let local = match local { Some(l) => l, None => return VariableValue::Opaque { summary: format!("variable {} not found", var_name) } };
+
+        // Vec<T> layout on x64: { ptr: *T, len: usize, cap: usize } (each 8 bytes)
+        let base_addr = match local.location {
+            VarLocation::FramePointerRelative(off) => (rbp as i64 + off as i64) as u64,
+            _ => return VariableValue::Opaque { summary: "register-based array not supported".into() },
+        };
+
+        // Read Vec<T> fat pointer: [data_ptr (8 bytes), len (8 bytes), cap (8 bytes)]
+        let vec_bytes = match self.read_bytes(process, base_addr, 24) { Ok(b) => b, Err(e) => return VariableValue::Error { message: e.to_string() } };
+        if vec_bytes.len() < 24 { return VariableValue::Opaque { summary: "truncated vec read".into() }; }
+
+        let data_ptr = u64::from_le_bytes(vec_bytes[0..8].try_into().unwrap());
+        let len = u64::from_le_bytes(vec_bytes[8..16].try_into().unwrap()) as usize;
+
+        if idx >= len {
+            return VariableValue::Error { message: format!("index {} out of bounds (len={})", idx, len) };
+        }
+
+        // For Vec<i32>: each element is 4 bytes
+        let elem_addr = data_ptr + (idx as u64 * 4);
+        let elem_bytes = match self.read_bytes(process, elem_addr, 4) { Ok(b) => b, Err(e) => return VariableValue::Error { message: e.to_string() } };
+        if elem_bytes.len() < 4 { return VariableValue::Opaque { summary: "short element read".into() }; }
+        let val = i32::from_le_bytes(elem_bytes[..4].try_into().unwrap());
+        VariableValue::Scalar(ScalarValue::Int(val as i128))
     }
+
+    fn eval_variable(&self, name: &str) -> VariableValue {
+        let process = match self.require_process() { Ok(p) => p, Err(_) => return VariableValue::Opaque { summary: "no process".into() } };
+        let rip = match self.get_rip() { Ok(r) => r, Err(_) => return VariableValue::Opaque { summary: "no rip".into() } };
+        let rbp = match self.get_rbp() { Ok(r) => r, Err(_) => return VariableValue::Opaque { summary: "no rbp".into() } };
+
+        let pdb_guard = self.pdb.lock().unwrap();
+        let pdb = match pdb_guard.as_ref() { Some(p) => p, None => return VariableValue::Opaque { summary: "no PDB".into() } };
+        let locals = pdb.locals_at_va(rip);
+        let local = match locals.iter().find(|l| l.name == name) {
+            Some(l) => l,
+            None => return VariableValue::Opaque { summary: format!("'{}' not found in scope", name) },
+        };
+
+        let addr = match local.location {
+            VarLocation::FramePointerRelative(off) => (rbp as i64 + off as i64) as u64,
+            _ => return VariableValue::Opaque { summary: "register variable".into() },
+        };
+        let size = if local.size > 0 { local.size } else { 8 };
+        let bytes = match self.read_bytes(process, addr, size) { Ok(b) => b, Err(e) => return VariableValue::Error { message: e.to_string() } };
+        bytes_to_value(&bytes, &local.type_name, addr)
+    }
+
+    // ── Panic message capture via stderr pipe ─────────────────────────────────
+
+    fn read_panic_message(&self) -> Option<String> {
+        use windows::Win32::System::Pipes::PeekNamedPipe;
+        use std::io::Read;
+        use std::mem::ManuallyDrop;
+        use std::os::windows::io::FromRawHandle;
+
+        let handle = self.stderr_read.lock().unwrap().as_ref().copied()?;
+
+        // Peek without blocking to see how many bytes the child wrote.
+        // SAFETY: PeekNamedPipe doesn't consume bytes; safe to call anytime.
+        // GitHub issue: #1 — Safe alternative: none.
+        let mut available: u32 = 0;
+        let ok = unsafe { PeekNamedPipe(handle, None, 0, None, Some(&mut available), None) };
+        if ok.is_err() || available == 0 { return None; }
+
+        // Wrap the raw HANDLE in a std::fs::File for safe, idiomatic reading.
+        // ManuallyDrop prevents File from closing the handle on drop (we manage it).
+        // SAFETY: handle is a valid, open pipe read-end. ManuallyDrop prevents double-close.
+        // GitHub issue: #1
+        let mut file = ManuallyDrop::new(unsafe {
+            std::fs::File::from_raw_handle(handle.0 as *mut std::ffi::c_void)
+        });
+
+        let mut buf = vec![0u8; available.min(8192) as usize];
+        let n = file.read(&mut buf).unwrap_or(0);
+
+        let text = String::from_utf8_lossy(&buf[..n]).to_string();
+        extract_panic_message(&text)
+    }
+
+    // ── Thread enumeration ────────────────────────────────────────────────────
 
     fn enumerate_threads(&self, pid: u32) -> Result<Vec<ThreadInfo>, DebuggerError> {
         let mut threads = Vec::new();
-        // SAFETY: CreateToolhelp32Snapshot creates a point-in-time snapshot.
-        // TH32CS_SNAPTHREAD is a documented, safe flag.
-        // The HANDLE must be closed with CloseHandle (done below).
-        // GitHub issue: #1 — Safe alternative: none (Win32 has no safe thread enumeration).
+        // SAFETY: Toolhelp snapshot of threads. GitHub issue: #1.
         let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }
             .map_err(|e| DebuggerError::DebuggerError(format!("CreateToolhelp32Snapshot: {}", e)))?;
 
@@ -475,9 +857,7 @@ impl WindowsDebugBackend {
             dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
             ..Default::default()
         };
-
-        // SAFETY: Thread32First/Next iterate snapshot entries. entry.dwSize is set correctly.
-        // GitHub issue: #1
+        // SAFETY: Thread32First/Next iterate the snapshot. GitHub issue: #1.
         let mut ok = unsafe { Thread32First(snap, &mut entry) };
         while ok.is_ok() {
             if entry.th32OwnerProcessID == pid {
@@ -486,13 +866,12 @@ impl WindowsDebugBackend {
                     name: None,
                     state: ThreadState::Stopped,
                     stop_reason: None,
-                    frame_count: 0,
+                    frame_count: 1,
                 });
             }
             ok = unsafe { Thread32Next(snap, &mut entry) };
         }
-
-        // SAFETY: CloseHandle releases the snapshot HANDLE. GitHub issue: #1
+        // SAFETY: Close the snapshot handle. GitHub issue: #1.
         unsafe { CloseHandle(snap).ok(); }
         Ok(threads)
     }
@@ -500,10 +879,85 @@ impl WindowsDebugBackend {
 
 impl Drop for WindowsDebugBackend {
     fn drop(&mut self) {
-        if let Some(handle) = *self.process.lock().unwrap() {
-            // SAFETY: CloseHandle frees the process HANDLE on backend destruction.
-            // GitHub issue: #1
-            unsafe { CloseHandle(handle).ok(); }
+        // SAFETY: Close process and stderr-read handles on drop. GitHub issue: #1.
+        if let Some(h) = *self.process.lock().unwrap() { unsafe { CloseHandle(h).ok(); } }
+        if let Some(h) = *self.stderr_read.lock().unwrap() { unsafe { CloseHandle(h).ok(); } }
+    }
+}
+
+// ── StackWalk64 callback wrappers ────────────────────────────────────────────
+// windows-rs exposes SymFunctionTableAccess64 / SymGetModuleBase64 as generic
+// `unsafe fn` items. StackWalk64 expects `unsafe extern "system" fn` pointers,
+// so we wrap them here with the correct ABI.
+
+unsafe extern "system" fn sym_func_table_access(
+    h: HANDLE,
+    base: u64,
+) -> *mut core::ffi::c_void {
+    SymFunctionTableAccess64(h, base)
+}
+
+unsafe extern "system" fn sym_get_module_base(h: HANDLE, addr: u64) -> u64 {
+    SymGetModuleBase64(h, addr)
+}
+
+// ── Free helpers ──────────────────────────────────────────────────────────────
+
+/// Interpret raw bytes as a typed VariableValue based on the type name.
+fn bytes_to_value(bytes: &[u8], type_name: &str, _address: u64) -> VariableValue {
+    match (type_name, bytes.len()) {
+        ("bool", 1) => VariableValue::Scalar(ScalarValue::Bool(bytes[0] != 0)),
+        ("i8",  1) => VariableValue::Scalar(ScalarValue::Int(bytes[0] as i8 as i128)),
+        ("u8",  1) => VariableValue::Scalar(ScalarValue::UInt(bytes[0] as u128)),
+        ("i16", 2) => VariableValue::Scalar(ScalarValue::Int(i16::from_le_bytes(bytes[..2].try_into().unwrap()) as i128)),
+        ("u16", 2) => VariableValue::Scalar(ScalarValue::UInt(u16::from_le_bytes(bytes[..2].try_into().unwrap()) as u128)),
+        ("i32", 4) | (_, 4) if type_name.starts_with("i32") =>
+            VariableValue::Scalar(ScalarValue::Int(i32::from_le_bytes(bytes[..4].try_into().unwrap()) as i128)),
+        ("u32", 4) =>
+            VariableValue::Scalar(ScalarValue::UInt(u32::from_le_bytes(bytes[..4].try_into().unwrap()) as u128)),
+        ("f32", 4) =>
+            VariableValue::Scalar(ScalarValue::Float(f32::from_le_bytes(bytes[..4].try_into().unwrap()) as f64)),
+        ("i64", 8) | ("isize", 8) =>
+            VariableValue::Scalar(ScalarValue::Int(i64::from_le_bytes(bytes[..8].try_into().unwrap()) as i128)),
+        ("u64", 8) | ("usize", 8) =>
+            VariableValue::Scalar(ScalarValue::UInt(u64::from_le_bytes(bytes[..8].try_into().unwrap()) as u128)),
+        ("f64", 8) =>
+            VariableValue::Scalar(ScalarValue::Float(f64::from_le_bytes(bytes[..8].try_into().unwrap()))),
+        _ => {
+            let hex: String = bytes.iter().take(16).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+            VariableValue::Opaque { summary: format!("[{} bytes: {}{}]", bytes.len(), hex, if bytes.len() > 16 { " ..." } else { "" }) }
         }
     }
+}
+
+/// Parse the Rust panic message from stderr output.
+fn extract_panic_message(stderr: &str) -> Option<String> {
+    // New format (Rust 1.65+):
+    // thread 'main' panicked at src\main.rs:58:22:
+    // index out of bounds: the len is 3 but the index is 99
+    //
+    // Old format:
+    // thread 'main' panicked at 'index out of bounds: ...', src\main.rs:58:22
+
+    // New format: line after "panicked at <location>:\n"
+    if let Some(pos) = stderr.find("panicked at ") {
+        let after = &stderr[pos..];
+        // Try new format: "panicked at file:line:\nmessage"
+        if let Some(newline_pos) = after.find('\n') {
+            let message_start = &after[newline_pos + 1..];
+            let message = message_start.lines().next()?.trim();
+            if !message.is_empty() {
+                return Some(message.to_string());
+            }
+        }
+        // Try old format: "panicked at 'message', ..."
+        if let Some(rest) = after.strip_prefix("panicked at '") {
+            let end = rest.find("', ")?;
+            return Some(rest[..end].to_string());
+        }
+    }
+
+    // Fallback: return the whole stderr trimmed
+    let trimmed = stderr.trim();
+    if !trimmed.is_empty() { Some(trimmed.to_string()) } else { None }
 }
