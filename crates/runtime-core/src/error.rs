@@ -41,4 +41,15 @@ mod tests {
     fn error_breakpoint_not_found_display() {
         assert!(DebuggerError::BreakpointNotFound(5).to_string().contains("5"));
     }
+
+    #[test]
+    fn error_invalid_state_display() {
+        let e = DebuggerError::InvalidState {
+            current: "Running".to_string(),
+            required: "Paused",
+        };
+        let s = e.to_string();
+        assert!(s.contains("Running"));
+        assert!(s.contains("Paused"));
+    }
 }
