@@ -57,4 +57,27 @@ macro_rules! probe {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_registry_register_lookup() {
+        let mut reg = ProbeRegistry::new();
+        reg.register("ctx", vec!["a".into(), "b".into()]);
+        let result = reg.lookup("ctx").unwrap();
+        assert_eq!(result, &["a".to_string(), "b".to_string()][..]);
+    }
+
+    #[test]
+    fn probe_registry_unknown_returns_none() {
+        let reg = ProbeRegistry::new();
+        assert_eq!(reg.lookup("missing"), None);
+    }
+
+    #[test]
+    fn probe_macro_returns_context_and_vars() {
+        let (ctx, vars) = probe!("ctx", x, y);
+        assert_eq!(ctx, "ctx");
+        assert_eq!(vars, vec!["x", "y"]);
+    }
+}
