@@ -129,3 +129,6 @@ impl Serializer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {}
