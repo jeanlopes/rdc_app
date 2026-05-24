@@ -18,6 +18,7 @@ O RDC é uma plataforma de depuração em tempo de execução para Windows. Ele 
 | Página | Conteúdo |
 |---|---|
 | [Guia Rápido](guia-rapido.md) | Pré-requisitos, build, e como rodar o servidor MCP |
+| [Visual Debugger UI](visual-debugger.md) | Guia completo da aplicação desktop de debug |
 | [Debugger Direto (sem MCP)](debugger-direto.md) | Como usar `win-debug-bridge` como biblioteca Rust |
 | [Ferramentas MCP](ferramentas-mcp.md) | Referência completa das 13 ferramentas MCP |
 | [Variáveis e Semantic Probes](variaveis-e-probes.md) | Como variáveis são serializadas e como criar probes |
@@ -30,6 +31,7 @@ O RDC é uma plataforma de depuração em tempo de execução para Windows. Ele 
 |---|---|---|
 | MCP + Windows Debug Bridge | 13 ferramentas MCP sobre a Windows Debug API | ✅ Completo |
 | PDB, Stepping & Panic | Breakpoints por linha, inspeção de locals, stepping, panic | ✅ Completo |
+| Visual Debugger UI | Aplicação egui para debug manual e observação de IA | ✅ Completo |
 | egui UI Introspection | 6 ferramentas MCP para inspecionar widgets egui | 🔧 Em desenvolvimento |
 
 ---

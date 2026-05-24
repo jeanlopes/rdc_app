@@ -28,3 +28,4 @@ win-debug-bridge.workspace = true
 protocol.workspace = true
 egui-introspection.workspace = true
 egui = { workspace = true }
+debug-session-view.workspace = true

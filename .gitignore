@@ -21,3 +21,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Temporary
+*.tmp
+*.swp

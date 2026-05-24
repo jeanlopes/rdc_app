@@ -35,6 +35,34 @@ Os binários ficam em `target\debug\`.
 
 O servidor fica escutando no stdio (stdin/stdout), no formato MCP (JSON-RPC). Ele está pronto para receber chamadas de um agente de IA.
 
+---
+
+## Rodando o Visual Debugger
+
+### Modo visualização (sem binário)
+
+```powershell
+cargo run -p visual-debugger
+```
+
+Abre o app sem processo de debug. Você pode navegar e abrir arquivos `.rs` diretamente. Para anexar um binário depois, clique em **"Attach binary…"** ou digite o caminho na address bar.
+
+### Com binário de exemplo
+
+```powershell
+cargo run -p visual-debugger -- --executable target\debug\debug-target-example.exe
+```
+
+> Se você omitir `--executable` mas `target\debug\debug-target-example.exe` existir, ele é detectado automaticamente.
+
+### Com binário próprio
+
+```powershell
+cargo run -p visual-debugger -- --executable "C:\caminho\para\seu_app.exe"
+```
+
+Para um guia completo da interface, atalhos e comportamento com IA, veja [Visual Debugger UI](visual-debugger.md).
+
 ### Conectar ao Claude Desktop
 
 Adicione ao `claude_desktop_config.json`:

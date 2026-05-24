@@ -1,0 +1,31 @@
+[package]
+name = "visual-debugger"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# UI
+egui = { workspace = true }
+eframe = { workspace = true }
+# async / shared state
+tokio = { workspace = true, features = ["full"] }
+# observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# errors
+anyhow = { workspace = true }
+# CLI
+clap = { workspace = true }
+# directory traversal
+walkdir = { workspace = true }
+# internal crates
+debug-session-view = { workspace = true }
+win-debug-bridge = { workspace = true }
+runtime-core = { workspace = true }
+mcp-server = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

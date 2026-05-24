@@ -54,5 +54,5 @@ async fn main() -> anyhow::Result<()> {
 
     info!("LLDB bridge ready");
 
-    server::run(handle, cli.executable, cli.args, &cli.transport, cli.port).await
+    server::run(handle, cli.executable, cli.args, &cli.transport, cli.port, None).await
 }
