@@ -4,17 +4,13 @@ use egui_introspection::{IntrospectionContext, IntrospectionStore};
 
 /// The main egui application with introspection enabled.
 pub struct RdcApp {
-    // Retained to keep the Arc<RwLock> alive for the duration of the app.
-    #[allow(dead_code)]
-    store: IntrospectionStore,
     ctx: IntrospectionContext,
 }
 
 impl RdcApp {
     /// Create a new app using a pre-existing store (shared with the MCP server).
     pub fn new_with_store(store: IntrospectionStore, _cc: &eframe::CreationContext<'_>) -> Self {
-        let ctx = IntrospectionContext::new(store.clone());
-        Self { store, ctx }
+        Self { ctx: IntrospectionContext::new(store) }
     }
 }
 
