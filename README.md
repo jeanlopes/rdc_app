@@ -193,6 +193,13 @@ Add to `claude_desktop_config.json`:
 See [`specs/001-mcp-lldb-bridge/quickstart.md`](specs/001-mcp-lldb-bridge/quickstart.md) for
 a full validation walkthrough.
 
+For full documentation in Portuguese, see the **[Wiki](docs/index.md)**:
+
+- [Guia Rápido](docs/guia-rapido.md) — instalação, build e primeiros passos
+- [Debugger Direto (sem MCP)](docs/debugger-direto.md) — API Rust do `win-debug-bridge`
+- [Ferramentas MCP](docs/ferramentas-mcp.md) — referência das 13 ferramentas
+- [Variáveis e Semantic Probes](docs/variaveis-e-probes.md) — serialização e probes
+
 ---
 
 ## Tech Stack
@@ -233,11 +240,11 @@ Key principles:
 
 O fluxo do SpecKit é linear e obrigatório:
 
-/speckit-specify  →  cria specs/003-egui-introspection/spec.md
-/speckit-clarify  →  faz perguntas e refina o spec.md
-/speckit-plan     →  cria plan.md + data-model.md + etc
-/speckit-tasks    →  cria tasks.md
-/speckit-implement →  executa as tasks
+- `/speckit-specify` → cria `specs/003-egui-introspection/spec.md`
+- `/speckit-clarify` → faz perguntas e refina o `spec.md`
+- `/speckit-plan` → cria `plan.md` + `data-model.md` + etc
+- `/speckit-tasks` → cria `tasks.md`
+- `/speckit-implement` → executa as tasks
 
 ## License
 
