@@ -4,21 +4,17 @@ use egui_introspection::{IntrospectionContext, IntrospectionStore};
 
 /// The main egui application with introspection enabled.
 pub struct RdcApp {
+    // Retained to keep the Arc<RwLock> alive for the duration of the app.
+    #[allow(dead_code)]
     store: IntrospectionStore,
     ctx: IntrospectionContext,
 }
 
 impl RdcApp {
-    /// Create a new app. The `IntrospectionStore` is shared with the MCP server.
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let store = IntrospectionStore::new();
+    /// Create a new app using a pre-existing store (shared with the MCP server).
+    pub fn new_with_store(store: IntrospectionStore, _cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = IntrospectionContext::new(store.clone());
         Self { store, ctx }
-    }
-
-    /// Expose the store for injection into the MCP server.
-    pub fn store(&self) -> IntrospectionStore {
-        self.store.clone()
     }
 }
 
@@ -26,14 +22,16 @@ impl eframe::App for RdcApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ctx.begin_frame();
 
-        let shapes = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let mut iui = self.ctx.wrap(ui);
-                iui.label("RDC Desktop UI — introspection active");
-                iui.button("Example Button");
-            });
-        }).shapes;
+        // Draw UI directly — eframe is already inside its own ctx.run() call.
+        // IntrospectableUi captures widget responses as they are rendered.
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let mut iui = self.ctx.wrap(ui);
+            iui.label("RDC Desktop UI — introspection active");
+            iui.button("Example Button");
+        });
 
-        self.ctx.end_frame(ctx, shapes);
+        // eframe manages end_frame() internally; we publish the widget tree now.
+        // PaintCmd capture is not available in eframe mode (eframe owns FullOutput).
+        self.ctx.end_frame(ctx, vec![]);
     }
 }

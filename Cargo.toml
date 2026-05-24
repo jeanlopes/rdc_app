@@ -43,3 +43,4 @@ runtime-core = { path = "crates/runtime-core" }
 win-debug-bridge = { path = "crates/win-debug-bridge" }
 protocol = { path = "crates/protocol" }
 egui-introspection = { path = "crates/egui-introspection" }
+mcp-server = { path = "apps/mcp-server" }

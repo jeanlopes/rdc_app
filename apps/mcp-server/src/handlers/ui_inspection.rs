@@ -9,7 +9,6 @@ use serde_json::{json, Value};
 use tracing::instrument;
 use egui_introspection::{IntrospectionStore, UiSnapshot};
 use egui_introspection::stable_id::StableWidgetId;
-use egui_introspection::widget_node::WidgetKind;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -175,7 +174,7 @@ pub fn ui_snapshot_diff(store: &IntrospectionStore) -> Value {
 mod tests {
     use super::*;
     use egui_introspection::snapshot::UiSnapshot;
-    use egui_introspection::widget_node::{WidgetNode, SerializableRect};
+    use egui_introspection::widget_node::{WidgetKind, WidgetNode, SerializableRect};
     use std::collections::HashMap;
 
     fn make_rect() -> SerializableRect {

@@ -10,6 +10,10 @@ description = "RDC MCP server — AI gateway to the LLDB debugger"
 name = "mcp-server"
 path = "src/main.rs"
 
+[lib]
+name = "mcp_server"
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 uuid.workspace = true
