@@ -177,6 +177,48 @@ impl VisualDebuggerApp {
                                                     let handle = Arc::new(handle);
                                                     *debug_handle.lock().unwrap() =
                                                         Some(Arc::clone(&handle));
+
+                                                    // Sync all existing UI breakpoints BEFORE launch
+                                                    // so codelldb can resolve them during configurationDone.
+                                                    let ui_bps = {
+                                                        let state = view.state.read().await;
+                                                        state.breakpoints.clone()
+                                                    };
+                                                    tracing::info!(count = ui_bps.len(), "syncing existing UI breakpoints before launch");
+                                                    for bp in ui_bps {
+                                                        let kind = BreakpointKind::SourceLine {
+                                                            file: bp.file.clone(),
+                                                            line: bp.line,
+                                                        };
+                                                        match handle.set_breakpoint(kind, None).await {
+                                                            Ok(bk) => {
+                                                                let mut guard = view.state.write().await;
+                                                                if let Some(entry) = guard.breakpoints.iter_mut().find(|b| b.file == bp.file && b.line == bp.line) {
+                                                                    entry.resolved = true;
+                                                                    entry.backend_id = Some(bk.id);
+                                                                }
+                                                                guard.log_terminal(format!(
+                                                                    "[bp] Auto-set {}:{} @ 0x{:x} (id={})",
+                                                                    bp.file.display(),
+                                                                    bp.line,
+                                                                    bk.locations.first().map(|l| l.address).unwrap_or(0),
+                                                                    bk.id
+                                                                ));
+                                                                let _ = view.notifier.send(*view.notifier.borrow() + 1);
+                                                            }
+                                                            Err(e) => {
+                                                                let mut guard = view.state.write().await;
+                                                                guard.log_terminal(format!(
+                                                                    "[bp] Failed to auto-set {}:{} — {:?}",
+                                                                    bp.file.display(),
+                                                                    bp.line,
+                                                                    e
+                                                                ));
+                                                                let _ = view.notifier.send(*view.notifier.borrow() + 1);
+                                                            }
+                                                        }
+                                                    }
+
                                                     let target = DebugTarget {
                                                         executable: exe_path.clone(),
                                                         args: vec![],
@@ -188,50 +230,10 @@ impl VisualDebuggerApp {
                                                             {
                                                                 let mut state = view.state.write().await;
                                                                 state.log_terminal(format!(
-                                                                    "[start] Launched PID {} — PAUSED at entry point",
+                                                                    "[start] Launched PID {} — running until first breakpoint",
                                                                     pid
                                                                 ));
                                                                 let _ = view.notifier.send(*view.notifier.borrow() + 1);
-                                                            }
-
-                                                            // Sync all existing UI breakpoints before continuing
-                                                            let ui_bps = {
-                                                                let state = view.state.read().await;
-                                                                state.breakpoints.clone()
-                                                            };
-                                                            tracing::info!(count = ui_bps.len(), "syncing existing UI breakpoints");
-                                                            for bp in ui_bps {
-                                                                let kind = BreakpointKind::SourceLine {
-                                                                    file: bp.file.clone(),
-                                                                    line: bp.line,
-                                                                };
-                                                                match handle.set_breakpoint(kind, None).await {
-                                                                    Ok(bk) => {
-                                                                        let mut guard = view.state.write().await;
-                                                                        if let Some(entry) = guard.breakpoints.iter_mut().find(|b| b.file == bp.file && b.line == bp.line) {
-                                                                            entry.resolved = true;
-                                                                            entry.backend_id = Some(bk.id);
-                                                                        }
-                                                                        guard.log_terminal(format!(
-                                                                            "[bp] Auto-set {}:{} @ 0x{:x} (id={})",
-                                                                            bp.file.display(),
-                                                                            bp.line,
-                                                                            bk.locations.first().map(|l| l.address).unwrap_or(0),
-                                                                            bk.id
-                                                                        ));
-                                                                        let _ = view.notifier.send(*view.notifier.borrow() + 1);
-                                                                    }
-                                                                    Err(e) => {
-                                                                        let mut guard = view.state.write().await;
-                                                                        guard.log_terminal(format!(
-                                                                            "[bp] Failed to auto-set {}:{} — {:?}",
-                                                                            bp.file.display(),
-                                                                            bp.line,
-                                                                            e
-                                                                        ));
-                                                                        let _ = view.notifier.send(*view.notifier.borrow() + 1);
-                                                                    }
-                                                                }
                                                             }
 
                                                             // Now continue so the process runs until it hits a breakpoint

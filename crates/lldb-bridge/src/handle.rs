@@ -42,15 +42,33 @@ impl LldbDebugHandle {
     pub async fn launch_process(&self, target: DebugTarget) -> Result<(u32, SessionState), DebuggerError> {
         self.ensure_init().await?;
         self.client.launch(target).await?;
-        // After launch with stopOnEntry:true, the process is paused at entry point.
-        // We immediately continue so it runs until the first breakpoint.
-        let event = self.client.continue_execution().await?;
-        // Map event to session state
-        let state = match event.kind {
-            protocol::tools::execution::ExecutionEventKind::BreakpointHit
-            | protocol::tools::execution::ExecutionEventKind::StepComplete
-            | protocol::tools::execution::ExecutionEventKind::Paused => SessionState::Paused(PauseReason::Breakpoint(0)),
-            protocol::tools::execution::ExecutionEventKind::Terminated { .. } => SessionState::Terminated(0),
+        // codelldb defers the launch response until configurationDone is sent.
+        self.client.configuration_done().await?;
+
+        // Wait for the first stopped event (entry point because stopOnEntry:true).
+        let event = self.client.wait_for_stop().await?;
+        let state = match &event.kind {
+            protocol::tools::execution::ExecutionEventKind::Paused => {
+                // Entry stop — continue so it runs until the first breakpoint.
+                let cont_event = self.client.continue_execution().await?;
+                match cont_event.kind {
+                    protocol::tools::execution::ExecutionEventKind::BreakpointHit
+                    | protocol::tools::execution::ExecutionEventKind::StepComplete
+                    | protocol::tools::execution::ExecutionEventKind::Paused => {
+                        SessionState::Paused(PauseReason::Breakpoint(0))
+                    }
+                    protocol::tools::execution::ExecutionEventKind::Terminated { .. } => {
+                        SessionState::Terminated(0)
+                    }
+                    _ => SessionState::Running,
+                }
+            }
+            protocol::tools::execution::ExecutionEventKind::BreakpointHit => {
+                SessionState::Paused(PauseReason::Breakpoint(0))
+            }
+            protocol::tools::execution::ExecutionEventKind::Terminated { .. } => {
+                SessionState::Terminated(0)
+            }
             _ => SessionState::Running,
         };
         Ok((0, state))

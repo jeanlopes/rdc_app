@@ -86,10 +86,21 @@ impl DapClient {
             args["cwd"] = c.into();
         }
 
+        // codelldb defers the launch response until configurationDone.
+        // We fire-and-forget here and wait for events later.
         self.transport
-            .request("launch", Some(args))
+            .send("launch", Some(args))
             .await
             .map_err(|e| DebuggerError::DebuggerError(format!("DAP launch failed: {}", e)))?;
+        Ok(())
+    }
+
+    pub async fn configuration_done(&self) -> Result<(), DebuggerError> {
+        info!("DAP configurationDone");
+        self.transport
+            .request("configurationDone", Some(json!({})))
+            .await
+            .map_err(|e| DebuggerError::DebuggerError(format!("configurationDone failed: {}", e)))?;
         Ok(())
     }
 
@@ -194,7 +205,7 @@ impl DapClient {
     pub async fn continue_execution(&self) -> Result<ExecutionEvent, DebuggerError> {
         info!("DAP continue");
         self.transport
-            .request("continue", Some(json!({})))
+            .request("continue", Some(json!({ "threadId": 0 })))
             .await
             .map_err(|e| DebuggerError::DebuggerError(format!("continue failed: {}", e)))?;
         self.wait_for_stop().await
@@ -203,7 +214,7 @@ impl DapClient {
     pub async fn pause_execution(&self) -> Result<ExecutionEvent, DebuggerError> {
         info!("DAP pause");
         self.transport
-            .request("pause", Some(json!({})))
+            .request("pause", Some(json!({ "threadId": 0 })))
             .await
             .map_err(|e| DebuggerError::DebuggerError(format!("pause failed: {}", e)))?;
         self.wait_for_stop().await
@@ -246,7 +257,7 @@ impl DapClient {
     }
 
     /// Wait until a 'stopped' or 'terminated'/'exited' event arrives.
-    async fn wait_for_stop(&self) -> Result<ExecutionEvent, DebuggerError> {
+    pub async fn wait_for_stop(&self) -> Result<ExecutionEvent, DebuggerError> {
         let mut rx = self.event_rx.lock().await;
         loop {
             let event = rx

@@ -7,6 +7,7 @@
 
 mod client;
 mod handle;
+mod logging;
 mod transport;
 
 pub use client::DapClient;

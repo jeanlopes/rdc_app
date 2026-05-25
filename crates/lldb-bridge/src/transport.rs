@@ -104,6 +104,9 @@ impl DapTransport {
                                     continue;
                                 }
                             };
+                            if let Some(logger) = crate::logging::global_logger() {
+                                logger.log(crate::logging::Direction::Received, &msg);
+                            }
 
                             if msg.get("type") == Some(&serde_json::Value::String("response".to_string())) {
                                 let request_seq = msg.get("request_seq").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -168,6 +171,9 @@ impl DapTransport {
         let full = format!("Content-Length: {}\r\n\r\n{}", payload.len(), payload);
 
         trace!("dap-send: {}", payload);
+        if let Some(logger) = crate::logging::global_logger() {
+            logger.log(crate::logging::Direction::Sent, &json);
+        }
 
         let (tx, rx) = oneshot::channel();
         {
@@ -183,5 +189,46 @@ impl DapTransport {
 
         let response = rx.await.map_err(|_| anyhow::anyhow!("DAP response channel dropped"))?;
         Ok(response)
+    }
+
+    /// Fire-and-forget: send a request without waiting for the response.
+    ///
+    /// Used for `launch` on codelldb, which defers its response until
+    /// `configurationDone` is sent.
+    pub async fn send(
+        &self,
+        command: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        let seq = {
+            let mut g = self.seq.lock().await;
+            let s = *g;
+            *g += 1;
+            s
+        };
+
+        let mut body = serde_json::Map::new();
+        body.insert("seq".to_string(), seq.into());
+        body.insert("type".to_string(), "request".into());
+        body.insert("command".to_string(), command.into());
+        if let Some(args) = arguments {
+            body.insert("arguments".to_string(), args);
+        }
+        let json = serde_json::Value::Object(body);
+        let payload = serde_json::to_string(&json)?;
+        let full = format!("Content-Length: {}\r\n\r\n{}", payload.len(), payload);
+
+        trace!("dap-send (fire-and-forget): {}", payload);
+        if let Some(logger) = crate::logging::global_logger() {
+            logger.log(crate::logging::Direction::Sent, &json);
+        }
+
+        {
+            let mut writer = self.writer.lock().await;
+            writer.write_all(full.as_bytes()).await?;
+            writer.flush().await?;
+        }
+
+        Ok(())
     }
 }
