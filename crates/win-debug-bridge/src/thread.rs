@@ -1,5 +1,5 @@
 use tokio::sync::{mpsc, oneshot};
-use tracing::instrument;
+use tracing::{info, instrument};
 use runtime_core::{
     error::DebuggerError,
     session::{DebugTarget, SessionState},
@@ -7,7 +7,7 @@ use runtime_core::{
     breakpoint::{Breakpoint, BreakpointId, BreakpointKind},
     variable::{Variable, EvalResult},
 };
-pub use protocol::tools::execution::ExecutionEvent;
+pub use protocol::tools::execution::{ExecutionEvent, ExecutionEventKind};
 
 /// One variant per debugger operation.
 /// Each carries its input payload and a oneshot reply channel.
@@ -107,13 +107,17 @@ impl WindowsDebugHandle {
         make_cmd: impl FnOnce(oneshot::Sender<T>) -> DebugCommand,
     ) -> Result<T, DebuggerError> {
         let (reply_tx, reply_rx) = oneshot::channel();
+        let cmd = make_cmd(reply_tx);
+        info!("SEND command to debug thread");
         self.tx
-            .send(make_cmd(reply_tx))
+            .send(cmd)
             .await
             .map_err(|_| DebuggerError::DebuggerError("debug thread disconnected".into()))?;
-        reply_rx
+        let result = reply_rx
             .await
-            .map_err(|_| DebuggerError::DebuggerError("reply channel dropped".into()))
+            .map_err(|_| DebuggerError::DebuggerError("reply channel dropped".into()));
+        info!("RECV reply from debug thread");
+        result
     }
 
     #[instrument(skip(self))]
@@ -189,7 +193,8 @@ impl WindowsDebugHandle {
 
 async fn run_loop(backend: crate::windows_backend::WindowsDebugBackend, mut rx: mpsc::Receiver<DebugCommand>) {
     while let Some(cmd) = rx.recv().await {
-        match cmd {
+        info!("RUN_LOOP received command");
+        let result = match cmd {
             DebugCommand::LaunchProcess { target, reply } => { let _ = reply.send(backend.launch_process(target)); }
             DebugCommand::GetState { reply } => { let _ = reply.send(backend.get_state()); }
             DebugCommand::SetBreakpoint { kind, condition, reply } => { let _ = reply.send(backend.set_breakpoint(kind, condition)); }
@@ -208,7 +213,8 @@ async fn run_loop(backend: crate::windows_backend::WindowsDebugBackend, mut rx: 
                 let _ = reply.send(backend.evaluate_expression(expression, thread_id, frame_index));
             }
             DebugCommand::ListThreads { reply } => { let _ = reply.send(backend.list_threads()); }
-        }
+        };
+        info!(?result, "RUN_LOOP command handled");
     }
     tracing::info!("win-debug-worker loop exited");
 }

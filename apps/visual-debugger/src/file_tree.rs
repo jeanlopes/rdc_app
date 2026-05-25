@@ -28,6 +28,9 @@ pub struct FileTree {
     pub root: Arc<Mutex<Vec<FileTreeNode>>>,
     pub expanded: HashSet<PathBuf>,
     pub scanned: HashSet<PathBuf>,
+    pub root_path: Option<PathBuf>,
+    /// Set to true when the user clicks "open folder"; cleared by app.rs after handling.
+    pub open_folder_requested: bool,
 }
 
 impl Default for FileTree {
@@ -36,6 +39,8 @@ impl Default for FileTree {
             root: Arc::new(Mutex::new(Vec::new())),
             expanded: HashSet::new(),
             scanned: HashSet::new(),
+            root_path: None,
+            open_folder_requested: false,
         }
     }
 }
@@ -70,6 +75,15 @@ impl FileTree {
             let mut guard = root.lock().unwrap();
             *guard = entries;
         });
+    }
+
+    /// Change the root directory, resetting all tree state.
+    pub fn change_root(&mut self, dir: PathBuf) {
+        *self.root.lock().unwrap() = Vec::new();
+        self.expanded.clear();
+        self.scanned.clear();
+        self.root_path = Some(dir.clone());
+        self.scan_directory(dir);
     }
 
     /// Scan children of a specific directory node lazily.
@@ -113,13 +127,37 @@ impl FileTree {
 
     /// Render the file tree and return the selected file path, if any.
     pub fn render(&mut self, ui: &mut egui::Ui, active_file: &Option<PathBuf>) -> Option<PathBuf> {
+        // Folder header
+        ui.horizontal(|ui| {
+            let folder_name = self.root_path.as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_uppercase())
+                .unwrap_or_else(|| "EXPLORER".to_string());
+            ui.label(egui::RichText::new(folder_name).small().strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let btn = egui::Button::new(egui::RichText::new("📂").small()).frame(false);
+                if ui.add(btn).on_hover_text("Abrir outra pasta…").clicked() {
+                    self.open_folder_requested = true;
+                }
+            });
+        });
+
+        ui.separator();
+
         let mut selected = None;
+        let mut to_scan: Vec<PathBuf> = Vec::new();
         let root = {
             let guard = self.root.lock().unwrap();
             guard.clone()
         };
         for node in &root {
-            Self::render_node(ui, node, active_file, &mut self.expanded, &mut selected);
+            Self::render_node(ui, node, active_file, &mut self.expanded, &self.scanned, &mut to_scan, &mut selected);
+        }
+        if !to_scan.is_empty() {
+            for dir in to_scan {
+                self.scan_children(&dir);
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
         }
         selected
     }
@@ -129,6 +167,8 @@ impl FileTree {
         node: &FileTreeNode,
         active_file: &Option<PathBuf>,
         expanded: &mut HashSet<PathBuf>,
+        scanned: &HashSet<PathBuf>,
+        to_scan: &mut Vec<PathBuf>,
         selected: &mut Option<PathBuf>,
     ) {
         let is_active = active_file.as_ref() == Some(&node.path);
@@ -145,7 +185,7 @@ impl FileTree {
                 .default_open(is_expanded)
                 .show(ui, |ui| {
                     for child in &node.children {
-                        Self::render_node(ui, child, active_file, expanded, selected);
+                        Self::render_node(ui, child, active_file, expanded, scanned, to_scan, selected);
                     }
                 });
             if header.header_response.clicked() {
@@ -154,6 +194,9 @@ impl FileTree {
                 } else {
                     expanded.insert(node.path.clone());
                 }
+            }
+            if expanded.contains(&node.path) && node.children.is_empty() && !scanned.contains(&node.path) {
+                to_scan.push(node.path.clone());
             }
         } else {
             let response = ui.selectable_label(is_active, label);

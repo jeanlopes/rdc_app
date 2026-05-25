@@ -10,7 +10,7 @@ mod ui_server;
 pub use ui_server::run_with_store;
 
 use debug_session_view::DebugSessionView;
-use win_debug_bridge::thread::WindowsDebugHandle;
+use lldb_bridge::LldbDebugHandle;
 use std::path::PathBuf;
 
 /// Run the debug MCP server in-process with a shared [`DebugSessionView`].
@@ -18,7 +18,7 @@ use std::path::PathBuf;
 /// Spawns the same JSON-RPC dispatch loop as the standalone `mcp-server` binary,
 /// but shares UI state so that AI-driven actions animate the visual debugger.
 pub async fn run_with_view(
-    handle: WindowsDebugHandle,
+    handle: LldbDebugHandle,
     executable: PathBuf,
     args: Vec<String>,
     view: DebugSessionView,

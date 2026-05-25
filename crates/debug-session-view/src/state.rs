@@ -29,6 +29,8 @@ pub struct BreakpointEntry {
     pub line: u32,
     /// True if the debugger confirmed a valid code address.
     pub resolved: bool,
+    /// Backend breakpoint id, if already synced with the debug engine.
+    pub backend_id: Option<u32>,
 }
 
 /// One thread in the running process.
@@ -61,6 +63,8 @@ pub struct DebugUIState {
     pub show_threads: bool,
     /// Transient error message (clears on next action).
     pub error_banner: Option<String>,
+    /// Terminal / log output lines (most recent last).
+    pub terminal_logs: Vec<String>,
 }
 
 impl Default for DebugUIState {
@@ -74,6 +78,7 @@ impl Default for DebugUIState {
             thread_list: Vec::new(),
             show_threads: false,
             error_banner: None,
+            terminal_logs: Vec::new(),
         }
     }
 }
@@ -120,6 +125,15 @@ impl DebugUIState {
     pub fn clear_error(&mut self) {
         self.error_banner = None;
     }
+
+    /// Append a line to the terminal log, keeping a max of 500 lines.
+    #[tracing::instrument(skip(self, message))]
+    pub fn log_terminal(&mut self, message: impl Into<String>) {
+        self.terminal_logs.push(message.into());
+        if self.terminal_logs.len() > 500 {
+            self.terminal_logs.remove(0);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +155,7 @@ mod tests {
             file: PathBuf::from("src/main.rs"),
             line: 10,
             resolved: false,
+            backend_id: None,
         };
         state.add_breakpoint(entry.clone());
         assert_eq!(state.breakpoints.len(), 1);

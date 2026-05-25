@@ -21,6 +21,8 @@ pub struct SourceLine {
     pub has_breakpoint: bool,
     /// False → dimmed dot in gutter.
     pub breakpoint_resolved: bool,
+    /// False for blank lines and comment-only lines — breakpoints are not allowed.
+    pub is_breakpointable: bool,
 }
 
 /// Manages source file content and rendering state.
@@ -72,10 +74,17 @@ impl SourceView {
                 let has_breakpoint = bp.is_some();
                 let breakpoint_resolved = bp.map(|b| b.resolved).unwrap_or(false);
 
-                let tokens = tokenize_line(text)
+                let expanded = text.replace('\t', "    ");
+                let tokens: Vec<(TokenClass, String)> = tokenize_line(&expanded)
                     .into_iter()
                     .map(|(class, s)| (class, s.to_string()))
                     .collect();
+
+                let is_breakpointable = tokens.iter().any(|(class, text)| match class {
+                    TokenClass::LineComment | TokenClass::BlockComment => false,
+                    TokenClass::Other => !text.trim().is_empty(),
+                    _ => true,
+                });
 
                 SourceLine {
                     number,
@@ -83,12 +92,13 @@ impl SourceView {
                     is_active,
                     has_breakpoint,
                     breakpoint_resolved,
+                    is_breakpointable,
                 }
             })
             .collect();
     }
 
-    /// Returns the visible line range given scroll offset and panel height.
+    #[allow(dead_code)]
     pub fn visible_range(&self, scroll_offset: f32, panel_height: f32, row_height: f32) -> Range<u32> {
         let start = ((scroll_offset / row_height).floor() as u32).saturating_sub(1);
         let count = ((panel_height / row_height).ceil() as u32) + 2;
@@ -96,7 +106,7 @@ impl SourceView {
         start..end
     }
 
-    /// Check whether the active line is inside the visible range.
+    #[allow(dead_code)]
     pub fn needs_scroll(&self, active_line: u32, range: &Range<u32>) -> bool {
         active_line < range.start || active_line >= range.end
     }
@@ -113,11 +123,16 @@ impl SourceView {
     /// Render the source view in egui.
     pub fn render(&mut self, ui: &mut egui::Ui, state: &mut DebugUIState, view_id: egui::Id) {
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
-        let available = ui.available_size();
-        let _panel_height = available.y;
+        let _panel_height = ui.available_size().y;
+
+        let base_font = egui::TextStyle::Monospace.resolve(ui.style());
+        let code_font = egui::FontId::new(base_font.size * 0.85, base_font.family.clone());
+
+        ui.spacing_mut().scroll.bar_outer_margin = 0.0;
 
         egui::ScrollArea::vertical()
             .id_salt(view_id)
+            .auto_shrink([false, false])
             .show_rows(ui, row_height, self.built_lines.len(), |ui, row_range| {
                 for row in row_range {
                     if let Some(line) = self.built_lines.get(row) {
@@ -127,46 +142,65 @@ impl SourceView {
                             egui::vec2(rect.width(), row_height),
                         );
 
-                        // Active line background
                         if line.is_active {
-                            ui.painter().rect_filled(line_rect, 0.0, egui::Color32::from_rgb(255, 255, 0));
+                            ui.painter().rect_filled(line_rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 100, 40));
                         }
 
                         ui.horizontal(|ui| {
-                            // Gutter with line number
-                            let gutter_width = 48.0;
+                            // Gutter: [dot(8px) | number(right-aligned) | 4px gap]
+                            let gutter_width = 42.0;
+                            let dot_cx = 8.0;          // dot center x from gutter left
+                            let num_right_x = gutter_width - 4.0; // number right edge x
+
                             let gutter_rect = egui::Rect::from_min_size(
                                 ui.cursor().min,
                                 egui::vec2(gutter_width, row_height),
                             );
-                            ui.allocate_rect(gutter_rect, egui::Sense::click());
+                            let sense = if line.is_breakpointable {
+                                egui::Sense::click()
+                            } else {
+                                egui::Sense::hover()
+                            };
+                            let gutter_response = ui.allocate_rect(gutter_rect, sense);
 
-                            // Line number
-                            ui.add_sized(
-                                egui::vec2(gutter_width - 16.0, row_height),
-                                egui::Label::new(
-                                    egui::RichText::new(format!("{}", line.number))
-                                        .monospace()
-                                        .small(),
-                                ),
-                            );
+                            let painter = ui.painter().clone();
 
-                            // Breakpoint dot
+                            // Breakpoint dot — LEFT of the line number
                             if line.has_breakpoint {
                                 let dot_color = if line.breakpoint_resolved {
-                                    egui::Color32::from_rgb(200, 0, 0)
+                                    egui::Color32::from_rgb(220, 50, 50)
                                 } else {
-                                    egui::Color32::from_rgb(100, 0, 0)
+                                    egui::Color32::from_rgb(110, 30, 30)
                                 };
-                                let dot_rect = egui::Rect::from_min_size(
-                                    gutter_rect.min + egui::vec2(gutter_width - 14.0, row_height / 2.0 - 4.0),
-                                    egui::vec2(8.0, 8.0),
+                                painter.circle_filled(
+                                    gutter_rect.min + egui::vec2(dot_cx, row_height * 0.5),
+                                    4.0,
+                                    dot_color,
                                 );
-                                ui.painter().circle_filled(dot_rect.center(), 4.0, dot_color);
+                            } else if line.is_breakpointable && gutter_response.hovered() {
+                                // Ghost dot on hover to indicate where a breakpoint can go
+                                painter.circle_stroke(
+                                    gutter_rect.min + egui::vec2(dot_cx, row_height * 0.5),
+                                    4.0,
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(200, 50, 50, 120)),
+                                );
                             }
 
-                            // Gutter click handler
-                            if ui.interact(gutter_rect, ui.id().with(("gutter", row)), egui::Sense::click()).clicked() {
+                            // Line number — right-aligned
+                            let num_color = if line.is_breakpointable {
+                                egui::Color32::from_gray(110)
+                            } else {
+                                egui::Color32::from_gray(60)
+                            };
+                            painter.text(
+                                gutter_rect.min + egui::vec2(num_right_x, row_height * 0.5),
+                                egui::Align2::RIGHT_CENTER,
+                                &format!("{}", line.number),
+                                code_font.clone(),
+                                num_color,
+                            );
+
+                            if gutter_response.clicked() && line.is_breakpointable {
                                 if line.has_breakpoint {
                                     state.remove_breakpoint(&self.file_path.clone().unwrap_or_default(), line.number);
                                 } else {
@@ -174,25 +208,31 @@ impl SourceView {
                                         file: self.file_path.clone().unwrap_or_default(),
                                         line: line.number,
                                         resolved: false,
+                                        backend_id: None,
                                     });
                                 }
                             }
 
-                            // Tokens
+                            // All tokens as a single LayoutJob — no inter-widget spacing
+                            let text_color = ui.visuals().text_color();
+                            let mut job = egui::text::LayoutJob::default();
                             for (class, text) in &line.tokens {
                                 let color = match class {
-                                    TokenClass::Keyword => egui::Color32::from_rgb(200, 100, 200),
-                                    TokenClass::StringLiteral => egui::Color32::from_rgb(100, 200, 100),
-                                    TokenClass::CharLiteral => egui::Color32::from_rgb(100, 200, 100),
-                                    TokenClass::LineComment => egui::Color32::from_rgb(128, 128, 128),
-                                    TokenClass::BlockComment => egui::Color32::from_rgb(128, 128, 128),
-                                    TokenClass::TypeIdent => egui::Color32::from_rgb(100, 200, 255),
-                                    TokenClass::Other => ui.visuals().text_color(),
+                                    TokenClass::Keyword      => egui::Color32::from_rgb(200, 120, 220),
+                                    TokenClass::StringLiteral | TokenClass::CharLiteral
+                                                             => egui::Color32::from_rgb(120, 200, 120),
+                                    TokenClass::LineComment | TokenClass::BlockComment
+                                                             => egui::Color32::from_gray(120),
+                                    TokenClass::TypeIdent    => egui::Color32::from_rgb(100, 200, 255),
+                                    TokenClass::Other        => text_color,
                                 };
-                                ui.add(egui::Label::new(
-                                    egui::RichText::new(text).monospace().small().color(color),
-                                ).selectable(false));
+                                job.append(text, 0.0, egui::text::TextFormat {
+                                    font_id: code_font.clone(),
+                                    color,
+                                    ..Default::default()
+                                });
                             }
+                            ui.add(egui::Label::new(job).selectable(false));
                         });
                     }
                 }
@@ -214,6 +254,7 @@ mod tests {
             is_active: false,
             has_breakpoint: false,
             breakpoint_resolved: false,
+            is_breakpointable: true,
         }).collect();
         // Scroll so that line 500 is in the viewport
         let scroll_offset = (500u32.saturating_sub(1)) as f32 * 20.0;
@@ -230,6 +271,7 @@ mod tests {
             is_active: false,
             has_breakpoint: false,
             breakpoint_resolved: false,
+            is_breakpointable: true,
         }).collect();
         let range = view.visible_range(4000.0, 600.0, 20.0); // scrolled to ~line 200
         assert!(view.needs_scroll(1, &range));
@@ -243,6 +285,7 @@ mod tests {
             file: PathBuf::from("src/main.rs"),
             line: 5,
             resolved: true,
+            backend_id: None,
         });
 
         let mut view = SourceView::default();

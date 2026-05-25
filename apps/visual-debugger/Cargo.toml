@@ -10,6 +10,7 @@ authors.workspace = true
 # UI
 egui = { workspace = true }
 eframe = { workspace = true }
+egui-phosphor = { workspace = true }
 # async / shared state
 tokio = { workspace = true, features = ["full"] }
 # observability
@@ -21,10 +22,16 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 # directory traversal
 walkdir = { workspace = true }
+# native file/folder dialogs
+rfd = { workspace = true }
+# serialization
+serde_json = { workspace = true }
+serde = { workspace = true }
 # internal crates
 debug-session-view = { workspace = true }
-win-debug-bridge = { workspace = true }
+lldb-bridge = { workspace = true }
 runtime-core = { workspace = true }
+protocol = { workspace = true }
 mcp-server = { workspace = true }
 
 [dev-dependencies]

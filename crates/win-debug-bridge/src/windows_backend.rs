@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tracing::{info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Diagnostics::Debug::{
@@ -69,6 +69,8 @@ pub struct WindowsDebugBackend {
     exe_path: Mutex<Option<PathBuf>>,
     /// Read end of stderr pipe (for panic message capture).
     stderr_read: Mutex<Option<HANDLE>>,
+    /// Address that needs INT3 re-patched after the original instruction is single-stepped.
+    pending_repatch: Mutex<Option<u64>>,
 }
 
 // SAFETY: Used from the single debug OS thread only.
@@ -87,6 +89,7 @@ impl WindowsDebugBackend {
             pdb: Mutex::new(None),
             exe_path: Mutex::new(None),
             stderr_read: Mutex::new(None),
+            pending_repatch: Mutex::new(None),
         })
     }
 
@@ -96,6 +99,7 @@ impl WindowsDebugBackend {
     pub fn launch_process(&self, target: DebugTarget) -> Result<(u32, SessionState), DebuggerError> {
         let exe = target.executable.clone();
         let exe_str = exe.to_string_lossy().to_string();
+        info!(executable = %exe_str, "LAUNCH_PROCESS start");
 
         // Create anonymous pipe for stderr capture (panic message extraction).
         let mut stderr_read = HANDLE::default();
@@ -154,14 +158,19 @@ impl WindowsDebugBackend {
         result.map_err(|e| DebuggerError::DebuggerError(format!("CreateProcessA: {}", e)))?;
 
         let pid = pi.dwProcessId;
+        info!(pid, h_process = ?pi.hProcess, "CreateProcessA succeeded");
         *self.process.lock().unwrap() = Some(pi.hProcess);
         *self.pid.lock().unwrap() = Some(pid);
         *self.stderr_read.lock().unwrap() = Some(stderr_read);
         *self.exe_path.lock().unwrap() = Some(exe.clone());
-        *self.state.lock().unwrap() = SessionState::Running;
+        // Process starts as Paused because we stop at the entry-point breakpoint
+        // so the caller can set breakpoints before real execution.
+        *self.state.lock().unwrap() = SessionState::Paused(PauseReason::Breakpoint(0));
 
         // Drain initial events and capture image base.
+        info!(pid, "draining initial debug events...");
         let image_base = self.drain_initial_events(pid)?;
+        info!(pid, image_base = %format!("0x{:x}", image_base), "initial events drained — process PAUSED at entry point");
 
         // Initialise DbgHelp for this process — required by StackWalk64.
         // fInvadeProcess=true auto-loads symbols for all loaded modules.
@@ -183,8 +192,8 @@ impl WindowsDebugBackend {
             }
         }
 
-        info!(pid, executable = %exe_str, "process launched");
-        Ok((pid, SessionState::Running))
+        info!(pid, executable = %exe_str, "LAUNCH_PROCESS complete — returning Paused (entry point)");
+        Ok((pid, SessionState::Paused(PauseReason::Breakpoint(0))))
     }
 
     pub fn get_state(&self) -> Result<SessionState, DebuggerError> {
@@ -195,11 +204,19 @@ impl WindowsDebugBackend {
 
     #[instrument(skip(self))]
     pub fn set_breakpoint(&self, kind: BreakpointKind, condition: Option<String>) -> Result<Breakpoint, DebuggerError> {
+        info!(?kind, "SET_BREAKPOINT start");
         let address = self.resolve_address(&kind)?;
+        info!(address = %format!("0x{:x}", address), "address resolved");
         let process = self.require_process()?;
+        info!(?process, "got process handle");
 
+        info!(address = %format!("0x{:x}", address), "reading original byte...");
         let original_byte = self.read_byte(process, address)?;
+        info!(original_byte = %format!("0x{:02x}", original_byte), "original byte read");
+
+        info!(address = %format!("0x{:x}", address), "writing INT3...");
         self.write_byte(process, address, INT3)?;
+        info!("INT3 written");
 
         let id = { let mut g = self.next_bp_id.lock().unwrap(); let id = *g; *g += 1; id };
 
@@ -216,16 +233,18 @@ impl WindowsDebugBackend {
             locations: vec![BreakpointLocation { address, source_location, resolved: true }],
         };
         self.breakpoints.lock().unwrap().insert(id, PatchedBreakpoint { address, original_byte, bp: bp.clone() });
-        info!(bp_id = id, address = %format!("0x{:x}", address), "breakpoint set");
+        info!(bp_id = id, address = %format!("0x{:x}", address), original_byte = %format!("0x{:02x}", original_byte), "SET_BREAKPOINT complete");
         Ok(bp)
     }
 
     pub fn remove_breakpoint(&self, id: BreakpointId) -> Result<(), DebuggerError> {
+        info!(bp_id = id, "REMOVE_BREAKPOINT start");
         let patched = self.breakpoints.lock().unwrap().remove(&id)
             .ok_or(DebuggerError::BreakpointNotFound(id))?;
+        info!(address = %format!("0x{:x}", patched.address), original_byte = %format!("0x{:02x}", patched.original_byte), "found breakpoint to remove");
         let process = self.require_process()?;
         self.write_byte(process, patched.address, patched.original_byte)?;
-        info!(bp_id = id, "breakpoint removed");
+        info!(bp_id = id, "REMOVE_BREAKPOINT complete");
         Ok(())
     }
 
@@ -236,6 +255,7 @@ impl WindowsDebugBackend {
     // ── Execution control ────────────────────────────────────────────────────
 
     pub fn continue_execution(&self) -> Result<ExecutionEvent, DebuggerError> {
+        info!("CONTINUE_EXECUTION called");
         self.event_loop()
     }
 
@@ -427,22 +447,40 @@ impl WindowsDebugBackend {
     fn read_byte(&self, process: HANDLE, address: u64) -> Result<u8, DebuggerError> {
         let mut byte: u8 = 0;
         let mut read = 0usize;
+        info!(?process, address = %format!("0x{:x}", address), "READ_BYTE");
         // SAFETY: ReadProcessMemory, 1 byte. GitHub issue: #1.
-        unsafe {
+        let result = unsafe {
             ReadProcessMemory(process, address as *const _, &mut byte as *mut u8 as *mut _, 1, Some(&mut read))
-                .map_err(|e| DebuggerError::DebuggerError(format!("ReadProcessMemory: {}", e)))?;
+        };
+        match result {
+            Ok(_) => {
+                info!(byte = %format!("0x{:02x}", byte), read, "READ_BYTE success");
+                Ok(byte)
+            }
+            Err(e) => {
+                error!(address = %format!("0x{:x}", address), error = %e, "READ_BYTE FAILED");
+                Err(DebuggerError::DebuggerError(format!("ReadProcessMemory: {}", e)))
+            }
         }
-        Ok(byte)
     }
 
     fn write_byte(&self, process: HANDLE, address: u64, byte: u8) -> Result<(), DebuggerError> {
         let mut written = 0usize;
+        info!(?process, address = %format!("0x{:x}", address), byte = %format!("0x{:02x}", byte), "WRITE_BYTE");
         // SAFETY: WriteProcessMemory, 1 byte. GitHub issue: #1.
-        unsafe {
+        let result = unsafe {
             WriteProcessMemory(process, address as *const _, &byte as *const u8 as *const _, 1, Some(&mut written))
-                .map_err(|e| DebuggerError::DebuggerError(format!("WriteProcessMemory: {}", e)))?;
+        };
+        match result {
+            Ok(_) => {
+                info!(written, "WRITE_BYTE success");
+                Ok(())
+            }
+            Err(e) => {
+                error!(address = %format!("0x{:x}", address), error = %e, "WRITE_BYTE FAILED");
+                Err(DebuggerError::DebuggerError(format!("WriteProcessMemory: {}", e)))
+            }
         }
-        Ok(())
     }
 
     fn read_bytes(&self, process: HANDLE, address: u64, size: usize) -> Result<Vec<u8>, DebuggerError> {
@@ -534,53 +572,80 @@ impl WindowsDebugBackend {
     fn drain_initial_events(&self, pid: u32) -> Result<u64, DebuggerError> {
         let mut image_base = 0u64;
         let mut event = DEBUG_EVENT::default();
-        for _ in 0..64 {
+        for i in 0..64 {
             // SAFETY: WaitForDebugEvent from the debug thread. GitHub issue: #1.
             let ok = unsafe { WaitForDebugEvent(&mut event, 200) };
-            if ok.is_err() { break; }
+            if ok.is_err() {
+                info!(iteration = i, "WaitForDebugEvent timeout/errored in drain_initial_events");
+                break;
+            }
             let tid = event.dwThreadId;
+            let code = event.dwDebugEventCode;
+            info!(iteration = i, tid, code = code.0, "drain_initial_events received event");
 
-            if event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT {
-                // Image base is in CreateProcessInfo
+            if code == CREATE_PROCESS_DEBUG_EVENT {
                 let base = unsafe { event.u.CreateProcessInfo.lpBaseOfImage as u64 };
                 if base != 0 { image_base = base; }
-                // The first event fires at the process entry point, which is a BP.
+                info!(tid, base = %format!("0x{:x}", base), "CREATE_PROCESS_DEBUG_EVENT — continuing");
+                // MUST continue this event so the process can proceed to the entry-point breakpoint
                 unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
+                continue;
+            }
+
+            // The very first exception after CREATE_PROCESS is the entry-point breakpoint.
+            // Leave the process STOPPED here so breakpoints can be set before real execution.
+            if code == EXCEPTION_DEBUG_EVENT {
+                let exc = unsafe { &event.u.Exception };
+                let exc_code = exc.ExceptionRecord.ExceptionCode.0 as u32;
+                info!(tid, exc_code = %format!("0x{:08x}", exc_code), "EXCEPTION at process startup — leaving STOPPED");
+                *self.stopped_tid.lock().unwrap() = tid;
                 return Ok(image_base);
             }
+
+            // Any other event: just continue
             unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
         }
+        info!(image_base = %format!("0x{:x}", image_base), "drain_initial_events finished (no entry breakpoint?)");
         Ok(image_base)
     }
 
     /// Main event loop — blocks until the next interesting stop event.
     fn event_loop(&self) -> Result<ExecutionEvent, DebuggerError> {
         let pid = self.require_pid()?;
+        info!(pid, "EVENT_LOOP started");
         let mut event = DEBUG_EVENT::default();
         loop {
             // SAFETY: WaitForDebugEvent from the debug thread. GitHub issue: #1.
             let ok = unsafe { WaitForDebugEvent(&mut event, 30_000) };
             if ok.is_err() {
+                error!(pid, "WaitForDebugEvent timeout — returning error");
                 return Err(DebuggerError::DebuggerError("WaitForDebugEvent timeout".into()));
             }
             let tid = event.dwThreadId;
-            match event.dwDebugEventCode {
+            let code = event.dwDebugEventCode;
+            info!(pid, tid, code = code.0, "EVENT_LOOP received debug event");
+
+            match code {
                 EXCEPTION_DEBUG_EVENT => {
                     let exc = unsafe { &event.u.Exception };
-                    let code = exc.ExceptionRecord.ExceptionCode.0 as u32;
+                    let exc_code = exc.ExceptionRecord.ExceptionCode.0 as u32;
                     let addr = exc.ExceptionRecord.ExceptionAddress as u64;
                     let first_chance = exc.dwFirstChance != 0;
+                    info!(pid, tid, exc_code = %format!("0x{:08x}", exc_code), addr = %format!("0x{:x}", addr), first_chance, "EXCEPTION_DEBUG_EVENT");
 
-                    match code {
+                    match exc_code {
                         // EXCEPTION_BREAKPOINT
                         0x80000003 => {
-                            let bp_id = self.on_breakpoint_hit(addr)?;
+                            info!(addr = %format!("0x{:x}", addr), "EXCEPTION_BREAKPOINT");
+                            let bp_id = self.on_breakpoint_hit(addr, tid)?;
+                            info!(bp_id, "breakpoint hit handled");
                             *self.stopped_tid.lock().unwrap() = tid;
                             *self.state.lock().unwrap() = SessionState::Paused(PauseReason::Breakpoint(bp_id));
                             unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
                             let pdb_loc = self.pdb.lock().unwrap()
                                 .as_ref()
                                 .and_then(|p| p.va_to_source(addr.saturating_sub(1)));
+                            info!(?pdb_loc, "PDB lookup for breakpoint location");
                             return Ok(ExecutionEvent {
                                 kind: ExecutionEventKind::BreakpointHit,
                                 thread_id: tid as u64,
@@ -589,6 +654,15 @@ impl WindowsDebugBackend {
                         }
                         // EXCEPTION_SINGLE_STEP
                         0x80000004 => {
+                            info!("EXCEPTION_SINGLE_STEP");
+                            if let Some(patch_addr) = self.pending_repatch.lock().unwrap().take() {
+                                info!(patch_addr = %format!("0x{:x}", patch_addr), "re-patching INT3 after single-step");
+                                if let Err(e) = self.require_process().and_then(|p| self.write_byte(p, patch_addr, INT3)) {
+                                    warn!("failed to re-patch breakpoint at 0x{:x}: {}", patch_addr, e);
+                                } else {
+                                    info!("re-patch success");
+                                }
+                            }
                             *self.stopped_tid.lock().unwrap() = tid;
                             *self.state.lock().unwrap() = SessionState::Paused(PauseReason::Step);
                             unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
@@ -604,7 +678,7 @@ impl WindowsDebugBackend {
                         // Unhandled exception = Rust panic/abort
                         _ if !first_chance => {
                             let msg = self.read_panic_message().unwrap_or_else(|| {
-                                format!("unhandled exception 0x{:08X} at 0x{:x}", code, addr)
+                                format!("unhandled exception 0x{:08X} at 0x{:x}", exc_code, addr)
                             });
                             warn!(panic = %msg, "panic/unhandled exception");
                             *self.stopped_tid.lock().unwrap() = tid;
@@ -620,13 +694,14 @@ impl WindowsDebugBackend {
                             });
                         }
                         _ => {
+                            info!(exc_code = %format!("0x{:08x}", exc_code), "ignoring first-chance exception");
                             unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_EXCEPTION_NOT_HANDLED).ok(); }
                         }
                     }
                 }
                 EXIT_PROCESS_DEBUG_EVENT => {
                     let exit_code = unsafe { event.u.ExitProcess.dwExitCode };
-                    // Non-zero exit = likely a Rust panic via abort.
+                    info!(pid, tid, exit_code, "EXIT_PROCESS_DEBUG_EVENT");
                     let kind = if exit_code != 0 {
                         let msg = self.read_panic_message().unwrap_or_else(|| {
                             format!("process exited with code {}", exit_code)
@@ -644,37 +719,58 @@ impl WindowsDebugBackend {
                     return Ok(ExecutionEvent { kind, thread_id: tid as u64, location: None });
                 }
                 _ => {
+                    info!(code = code.0, "ignoring non-exception debug event");
                     unsafe { ContinueDebugEvent(pid, tid, windows::Win32::Foundation::DBG_CONTINUE).ok(); }
                 }
             }
         }
     }
 
-    fn on_breakpoint_hit(&self, rip_after_int3: u64) -> Result<BreakpointId, DebuggerError> {
+    fn on_breakpoint_hit(&self, rip_after_int3: u64, tid: u32) -> Result<BreakpointId, DebuggerError> {
         let patch_addr = rip_after_int3.saturating_sub(1);
+        info!(rip = %format!("0x{:x}", rip_after_int3), patch_addr = %format!("0x{:x}", patch_addr), "ON_BREAKPOINT_HIT");
         let bps = self.breakpoints.lock().unwrap();
         if let Some((&id, p)) = bps.iter().find(|(_, p)| p.address == patch_addr) {
+            info!(bp_id = id, "user breakpoint hit");
             let original = p.original_byte;
             drop(bps);
             let process = self.require_process()?;
+            info!("restoring original byte before single-step");
             self.write_byte(process, patch_addr, original)?;
             self.breakpoints.lock().unwrap().get_mut(&id).map(|p| p.bp.increment_hit_count());
+            // Schedule re-patch after we single-step the original instruction
+            *self.pending_repatch.lock().unwrap() = Some(patch_addr);
+            // Set trap flag so the CPU stops again right after the original instruction
+            info!(tid, "setting TRAP_FLAG for single-step");
+            let mut ctx = self.get_thread_context(tid)?;
+            ctx.EFlags |= TRAP_FLAG;
+            self.set_thread_context(tid, &ctx)?;
             Ok(id)
         } else {
-            Ok(0) // system/injected breakpoint
+            info!("system/injected breakpoint (id=0)");
+            Ok(0)
         }
     }
 
     fn resolve_address(&self, kind: &BreakpointKind) -> Result<u64, DebuggerError> {
-        match kind {
+        info!(?kind, "RESOLVE_ADDRESS");
+        let result = match kind {
             BreakpointKind::Address { addr } => Ok(*addr),
             BreakpointKind::SourceLine { file, line } => {
-                self.pdb.lock().unwrap()
-                    .as_ref()
-                    .and_then(|p| p.source_to_va(file, *line))
-                    .ok_or_else(|| DebuggerError::DebuggerError(
-                        format!("no address for {}:{} in PDB", file.display(), line)
-                    ))
+                let pdb = self.pdb.lock().unwrap();
+                let maybe_addr = pdb.as_ref().and_then(|p| {
+                    let exact = p.source_to_va(file, *line);
+                    if exact.is_some() {
+                        info!("found exact line mapping");
+                    } else {
+                        info!("exact line not found, trying nearest...");
+                    }
+                    exact.or_else(|| p.source_to_va_nearest(file, *line, 20))
+                });
+                info!(resolved = ?maybe_addr, "source line resolution result");
+                maybe_addr.ok_or_else(|| DebuggerError::DebuggerError(
+                    format!("no address for {}:{} in PDB", file.display(), line)
+                ))
             }
             BreakpointKind::FunctionName { name } => {
                 self.pdb.lock().unwrap()
@@ -686,7 +782,9 @@ impl WindowsDebugBackend {
             }
             BreakpointKind::Regex { .. } =>
                 Err(DebuggerError::DebuggerError("regex breakpoints not yet supported".into())),
-        }
+        };
+        info!(address = ?result.as_ref().map(|a| format!("0x{:x}", a)), "RESOLVE_ADDRESS done");
+        result
     }
 
     // ── Local variable reading ────────────────────────────────────────────────

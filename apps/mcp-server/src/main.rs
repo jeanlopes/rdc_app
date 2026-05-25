@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Spawn LLDB bridge thread
-    let handle = win_debug_bridge::thread::WindowsDebugHandle::spawn()
+    let handle = lldb_bridge::LldbDebugHandle::spawn()
         .map_err(|e| anyhow::anyhow!("Failed to initialise LLDB: {}", e))?;
 
     info!("LLDB bridge ready");

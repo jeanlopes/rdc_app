@@ -67,52 +67,59 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let debug_handle = if executable.is_some() {
-        runtime
-            .block_on(async { win_debug_bridge::thread::WindowsDebugHandle::spawn() })
-            .ok()
-            .map(Arc::new)
-    } else {
-        None
-    };
+    let debug_handle = Arc::new(std::sync::Mutex::new(
+        if executable.is_some() {
+            lldb_bridge::LldbDebugHandle::spawn()
+                .ok()
+                .map(Arc::new)
+        } else {
+            None
+        }
+    ));
 
-    if let Some(ref handle) = debug_handle {
-        if let Some(ref exec) = executable {
-            let handle = Arc::clone(handle);
-            let exec = exec.clone();
-            runtime.spawn(async move {
-                let target = runtime_core::session::DebugTarget {
-                    executable: exec,
-                    args: vec![],
-                    env: Default::default(),
-                    working_dir: None,
-                };
-                if let Err(e) = handle.launch_process(target).await {
-                    tracing::error!("Failed to launch process: {:?}", e);
-                }
-            });
+    {
+        let guard = debug_handle.lock().unwrap();
+        if let Some(ref handle) = *guard {
+            if let Some(ref exec) = executable {
+                let handle = Arc::clone(handle);
+                let exec = exec.clone();
+                runtime.spawn(async move {
+                    let target = runtime_core::session::DebugTarget {
+                        executable: exec,
+                        args: vec![],
+                        env: Default::default(),
+                        working_dir: None,
+                    };
+                    if let Err(e) = handle.launch_process(target).await {
+                        tracing::error!("Failed to launch process: {:?}", e);
+                    }
+                });
+            }
         }
     }
 
     // Spawn in-process MCP debug server sharing the same DebugSessionView
-    if let Some(ref handle) = debug_handle {
-        if let Some(ref exec) = executable {
-            let mcp_handle = Arc::clone(handle);
-            let mcp_view = view.clone();
-            let mcp_executable = exec.clone();
-            std::thread::spawn(move || {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("mcp tokio runtime")
-                    .block_on(mcp_server::run_with_view(
-                        (*mcp_handle).clone(),
-                        mcp_executable,
-                        vec![],
-                        mcp_view,
-                    ))
-                    .unwrap_or_else(|e| tracing::error!("MCP server exited: {e}"));
-            });
+    {
+        let guard = debug_handle.lock().unwrap();
+        if let Some(ref handle) = *guard {
+            if let Some(ref exec) = executable {
+                let mcp_handle = Arc::clone(handle);
+                let mcp_view = view.clone();
+                let mcp_executable = exec.clone();
+                std::thread::spawn(move || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("mcp tokio runtime")
+                        .block_on(mcp_server::run_with_view(
+                            (*mcp_handle).clone(),
+                            mcp_executable,
+                            vec![],
+                            mcp_view,
+                        ))
+                        .unwrap_or_else(|e| tracing::error!("MCP server exited: {e}"));
+                });
+            }
         }
     }
 
@@ -122,7 +129,10 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "RDC Visual Debugger",
         native_options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            let mut fonts = egui::FontDefinitions::default();
+            egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+            cc.egui_ctx.set_fonts(fonts);
             Ok(Box::new(VisualDebuggerApp::new(
                 app_view,
                 debug_handle,

@@ -2,7 +2,8 @@
 
 use std::time::Instant;
 
-use debug_session_view::{DebugUIState, ToolbarAction};
+use debug_session_view::{DebugSessionState, DebugUIState, ToolbarAction};
+use egui_phosphor::regular as ph;
 use egui::{Key, Modifiers};
 
 /// A keyboard shortcut, supporting single-key and two-key chord sequences.
@@ -70,7 +71,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::Continue,
                 label: "Continue",
-                icon: "▶",
+                icon: ph::PLAY,
                 shortcut: "F5",
                 shortcut_key: KeyCombo::Single {
                     modifiers: Modifiers::NONE,
@@ -80,7 +81,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::BreakAll,
                 label: "Break All",
-                icon: "⏸",
+                icon: ph::PAUSE,
                 shortcut: "Ctrl+Alt+Break",
                 shortcut_key: KeyCombo::Single {
                     modifiers: Modifiers::CTRL | Modifiers::ALT,
@@ -90,7 +91,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::StopDebugging,
                 label: "Stop",
-                icon: "⏹",
+                icon: ph::STOP,
                 shortcut: "Shift+F5",
                 shortcut_key: KeyCombo::Single {
                     modifiers: Modifiers::SHIFT,
@@ -100,7 +101,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::Restart,
                 label: "Restart",
-                icon: "🔄",
+                icon: ph::ARROW_CLOCKWISE,
                 shortcut: "Ctrl+Shift+F5",
                 shortcut_key: KeyCombo::Single {
                     modifiers: Modifiers::CTRL | Modifiers::SHIFT,
@@ -110,7 +111,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::StepBackInto,
                 label: "Step Back Into",
-                icon: "⏮",
+                icon: ph::ARROW_U_DOWN_LEFT,
                 shortcut: "Ctrl+R, F11",
                 shortcut_key: KeyCombo::Chord {
                     first: (Modifiers::CTRL, Key::R),
@@ -120,7 +121,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::StepBackOver,
                 label: "Step Back Over",
-                icon: "⏭",
+                icon: ph::ARROW_U_UP_LEFT,
                 shortcut: "Ctrl+R, F10",
                 shortcut_key: KeyCombo::Chord {
                     first: (Modifiers::CTRL, Key::R),
@@ -130,7 +131,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::StepBackOut,
                 label: "Step Back Out",
-                icon: "⏏",
+                icon: ph::ARROW_BEND_UP_LEFT,
                 shortcut: "Ctrl+R, Shift+F11",
                 shortcut_key: KeyCombo::Chord {
                     first: (Modifiers::CTRL, Key::R),
@@ -140,7 +141,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::ShowNextStatement,
                 label: "Show Next",
-                icon: "🔍",
+                icon: ph::CROSSHAIR,
                 shortcut: "Alt+Num *",
                 shortcut_key: KeyCombo::Single {
                     modifiers: Modifiers::ALT,
@@ -150,7 +151,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::StepInto,
                 label: "Step Into",
-                icon: "↓",
+                icon: ph::ARROW_FAT_DOWN,
                 shortcut: "F11",
                 shortcut_key: KeyCombo::Single {
                     modifiers: Modifiers::NONE,
@@ -160,7 +161,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::StepOver,
                 label: "Step Over",
-                icon: "↷",
+                icon: ph::ARROW_FAT_RIGHT,
                 shortcut: "F10",
                 shortcut_key: KeyCombo::Single {
                     modifiers: Modifiers::NONE,
@@ -170,7 +171,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::StepOut,
                 label: "Step Out",
-                icon: "↑",
+                icon: ph::ARROW_FAT_UP,
                 shortcut: "Shift+F11",
                 shortcut_key: KeyCombo::Single {
                     modifiers: Modifiers::SHIFT,
@@ -180,7 +181,7 @@ impl ToolbarButton {
             ToolbarButton {
                 action: ToolbarAction::ShowThreadsInSource,
                 label: "Threads",
-                icon: "🧵",
+                icon: ph::STACK,
                 shortcut: "",
                 shortcut_key: KeyCombo::Single {
                     modifiers: Modifiers::NONE,
@@ -264,22 +265,46 @@ impl Toolbar {
     /// Render the toolbar and return clicked actions.
     pub fn render(&self, ui: &mut egui::Ui, state: &DebugUIState) -> Vec<ToolbarAction> {
         let mut actions = Vec::new();
+        let has_rs = state
+            .active_file
+            .as_ref()
+            .map(|p| p.extension().map(|e| e == "rs").unwrap_or(false))
+            .unwrap_or(false);
         ui.horizontal(|ui| {
             for btn in &self.buttons {
                 let pressed = state.is_pressed(btn.action);
-                let btn_text = format!("{} {}", btn.icon, btn.label);
+
+                let (icon, label): (&str, &str) = if btn.action == ToolbarAction::Continue {
+                    match state.session_state {
+                        DebugSessionState::Paused => (ph::PLAY, "Continue"),
+                        _ => (ph::PLAY, "Start"),
+                    }
+                } else {
+                    (btn.icon, btn.label)
+                };
+
+                let btn_text = format!("{} {}", icon, label);
                 let mut visuals = ui.visuals().widgets.inactive.clone();
                 if pressed {
                     visuals = ui.visuals().widgets.active.clone();
                 }
 
+                let enabled = if btn.action == ToolbarAction::Continue {
+                    // Start only enabled when we have an .rs file active OR
+                    // when a session is already running (Paused -> Continue)
+                    has_rs || state.session_state == DebugSessionState::Paused
+                } else {
+                    true
+                };
+
                 let response = ui
-                    .add(
+                    .add_enabled(
+                        enabled,
                         egui::Button::new(egui::RichText::new(&btn_text).small())
                             .fill(visuals.bg_fill)
                             .stroke(visuals.bg_stroke),
                     )
-                    .on_hover_text(format!("{} ({})", btn.label, btn.shortcut));
+                    .on_hover_text(format!("{} ({})", label, btn.shortcut));
 
                 if response.clicked() {
                     actions.push(btn.action);

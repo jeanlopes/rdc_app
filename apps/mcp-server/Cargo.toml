@@ -24,7 +24,7 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 runtime-core.workspace = true
-win-debug-bridge.workspace = true
+lldb-bridge.workspace = true
 protocol.workspace = true
 egui-introspection.workspace = true
 egui = { workspace = true }
