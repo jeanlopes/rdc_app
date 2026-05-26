@@ -10,6 +10,10 @@ description = "RDC MCP server — AI gateway to the LLDB debugger"
 name = "mcp-server"
 path = "src/main.rs"
 
+[lib]
+name = "mcp_server"
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 uuid.workspace = true
@@ -20,7 +24,8 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 runtime-core.workspace = true
-win-debug-bridge.workspace = true
+lldb-bridge.workspace = true
 protocol.workspace = true
 egui-introspection.workspace = true
 egui = { workspace = true }
+debug-session-view.workspace = true

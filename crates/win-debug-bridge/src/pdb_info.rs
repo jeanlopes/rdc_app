@@ -270,6 +270,27 @@ impl PdbInfo {
         Some(self.rva_to_va(rva))
     }
 
+    /// Find the nearest line within `window` lines that has a mapped address.
+    pub fn source_to_va_nearest(&self, file: &Path, line: u32, window: u32) -> Option<u64> {
+        let stem = file.file_stem()?.to_string_lossy().to_lowercase();
+        // Try exact match first
+        if let Some(&rva) = self.line_to_rva.get(&(stem.clone(), line)) {
+            return Some(self.rva_to_va(rva));
+        }
+        // Search outward: 1, -1, 2, -2, ...
+        for offset in 1..=window {
+            if let Some(&rva) = self.line_to_rva.get(&(stem.clone(), line.saturating_add(offset))) {
+                return Some(self.rva_to_va(rva));
+            }
+            if offset <= line {
+                if let Some(&rva) = self.line_to_rva.get(&(stem.clone(), line - offset)) {
+                    return Some(self.rva_to_va(rva));
+                }
+            }
+        }
+        None
+    }
+
     /// Get the function name containing the given virtual address.
     pub fn va_to_function_name(&self, va: u64) -> Option<String> {
         let rva = self.va_to_rva(va)?;

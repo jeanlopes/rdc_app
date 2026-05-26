@@ -1,10 +1,11 @@
 use anyhow::Result;
-use win_debug_bridge::thread::WindowsDebugHandle as LLDBHandle;
+use lldb_bridge::LldbDebugHandle as LLDBHandle;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
 use crate::handlers::session::SessionContext;
+use debug_session_view::DebugSessionView;
 
 /// Start the MCP server with the configured transport.
 ///
@@ -16,8 +17,9 @@ pub async fn run(
     _args: Vec<String>,
     transport: &str,
     port: u16,
+    view: Option<DebugSessionView>,
 ) -> Result<()> {
-    let ctx = Arc::new(SessionContext::new(handle));
+    let ctx = Arc::new(SessionContext::new(handle, view));
 
     match transport {
         "stdio" => run_stdio(ctx).await,
@@ -114,13 +116,13 @@ async fn dispatch(
         "set_breakpoint" => {
             let input = serde_json::from_value(params)
                 .map_err(|e| DebuggerError::ProtocolError(e.to_string()))?;
-            let output = bp::handle_set_breakpoint(&ctx.handle, input).await?;
+            let output = bp::handle_set_breakpoint(&ctx.handle, input, &ctx.view).await?;
             Ok(serde_json::to_value(output).unwrap())
         }
         "remove_breakpoint" => {
             let input = serde_json::from_value(params)
                 .map_err(|e| DebuggerError::ProtocolError(e.to_string()))?;
-            bp::handle_remove_breakpoint(&ctx.handle, input).await?;
+            bp::handle_remove_breakpoint(&ctx.handle, input, &ctx.view).await?;
             Ok(serde_json::json!({}))
         }
         "list_breakpoints" => {
@@ -128,29 +130,29 @@ async fn dispatch(
             Ok(serde_json::to_value(output).unwrap())
         }
         "continue_execution" => {
-            let output = exec::handle_continue_execution(&ctx.handle).await?;
+            let output = exec::handle_continue_execution(&ctx.handle, &ctx.view).await?;
             Ok(serde_json::to_value(output).unwrap())
         }
         "pause_execution" => {
-            let output = exec::handle_pause_execution(&ctx.handle).await?;
+            let output = exec::handle_pause_execution(&ctx.handle, &ctx.view).await?;
             Ok(serde_json::to_value(output).unwrap())
         }
         "step_over" => {
             let input = serde_json::from_value(params)
                 .map_err(|e| DebuggerError::ProtocolError(e.to_string()))?;
-            let output = exec::handle_step_over(&ctx.handle, input).await?;
+            let output = exec::handle_step_over(&ctx.handle, input, &ctx.view).await?;
             Ok(serde_json::to_value(output).unwrap())
         }
         "step_into" => {
             let input = serde_json::from_value(params)
                 .map_err(|e| DebuggerError::ProtocolError(e.to_string()))?;
-            let output = exec::handle_step_into(&ctx.handle, input).await?;
+            let output = exec::handle_step_into(&ctx.handle, input, &ctx.view).await?;
             Ok(serde_json::to_value(output).unwrap())
         }
         "step_out" => {
             let input = serde_json::from_value(params)
                 .map_err(|e| DebuggerError::ProtocolError(e.to_string()))?;
-            let output = exec::handle_step_out(&ctx.handle, input).await?;
+            let output = exec::handle_step_out(&ctx.handle, input, &ctx.view).await?;
             Ok(serde_json::to_value(output).unwrap())
         }
         "read_locals" => {

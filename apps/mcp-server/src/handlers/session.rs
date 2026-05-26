@@ -1,4 +1,4 @@
-use win_debug_bridge::thread::WindowsDebugHandle as LLDBHandle;
+use lldb_bridge::LldbDebugHandle as LLDBHandle;
 use protocol::tools::session::{LaunchInput, LaunchOutput, SessionStateOutput};
 use runtime_core::error::DebuggerError;
 use runtime_core::session::DebugTarget;
@@ -6,19 +6,23 @@ use tracing::{error, info, instrument};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use debug_session_view::DebugSessionView;
+
 /// Shared state accessible from all handlers.
 pub struct SessionContext {
     pub handle: LLDBHandle,
     pub session_id: Arc<Mutex<Option<String>>>,
     pub pid: Arc<Mutex<Option<u32>>>,
+    pub view: Option<DebugSessionView>,
 }
 
 impl SessionContext {
-    pub fn new(handle: LLDBHandle) -> Self {
+    pub fn new(handle: LLDBHandle, view: Option<DebugSessionView>) -> Self {
         Self {
             handle,
             session_id: Arc::new(Mutex::new(None)),
             pid: Arc::new(Mutex::new(None)),
+            view,
         }
     }
 }

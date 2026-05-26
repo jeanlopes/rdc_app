@@ -21,3 +21,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Temporary
+*.tmp
+*.swp
+
+# Downloaded tooling (e.g. CodeLLDB adapter)
+tools/
