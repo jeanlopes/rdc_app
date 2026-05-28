@@ -427,11 +427,23 @@ async fn resolve_rust_binary(cargo_toml: &std::path::Path, _rs_file: &std::path:
 /// Update UI state from an execution event returned by the debug thread.
 fn apply_execution_event(state: &mut debug_session_view::DebugUIState, event: &ExecutionEvent) {
     match event.kind {
-        ExecutionEventKind::BreakpointHit | ExecutionEventKind::StepComplete | ExecutionEventKind::Paused => {
+        ExecutionEventKind::BreakpointHit | ExecutionEventKind::Paused => {
             state.session_state = DebugSessionState::Paused;
             if let Some(ref loc) = event.location {
                 state.active_file = Some(loc.file.clone());
                 state.active_line = Some(loc.line);
+            }
+        }
+        ExecutionEventKind::StepComplete => {
+            state.session_state = DebugSessionState::Paused;
+            if let Some(ref loc) = event.location {
+                state.active_file = Some(loc.file.clone());
+                state.active_line = Some(loc.line);
+            } else {
+                // Step completed but location couldn't be resolved — clear the
+                // highlight so the user knows execution moved (rather than showing
+                // a stale line from the previous stop).
+                state.active_line = None;
             }
         }
         ExecutionEventKind::Terminated { exit_code } => {

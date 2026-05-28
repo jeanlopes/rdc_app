@@ -198,6 +198,16 @@ impl PdbResolver {
             return None;
         }
         let rva = (va - module_base) as u32;
+
+        // Addresses in other modules (e.g. ntdll) that happen to sit at higher
+        // load addresses than our exe produce enormous RVAs when subtracted from
+        // module_base.  Without this guard, next_back() would return the last
+        // entry in the PDB (CRT startup code) for any ntdll/kernel address.
+        let max_rva = self.rva_to_line.keys().next_back().copied().unwrap_or(0);
+        if rva > max_rva.saturating_add(0x1000) {
+            return None;
+        }
+
         // Find the greatest RVA ≤ query RVA.
         let (_, (path, line)) = self.rva_to_line.range(..=rva).next_back()?;
         Some((PathBuf::from(path), *line))
@@ -205,6 +215,49 @@ impl PdbResolver {
 
     pub fn has_module_base(&self) -> bool {
         self.module_base.is_some()
+    }
+
+    /// Return the VA of the first instruction of the NEXT source line after
+    /// `current_va` within the same file.
+    ///
+    /// Used by `handle_step` to implement step_over via a temp breakpoint:
+    /// LLDB 19.1.7 on Windows only advances one instruction with `step_over()`
+    /// because SymbolFileNativePDB is broken and it doesn't know line boundaries.
+    pub fn next_source_line_va(
+        &self,
+        current_va: u64,
+        current_file_basename: &str,
+        current_line: u32,
+    ) -> Option<u64> {
+        let module_base = self.module_base?;
+        if current_va < module_base {
+            return None;
+        }
+        let current_rva = (current_va - module_base) as u32;
+        let start_rva = current_rva.checked_add(1)?;
+
+        let basename_lower = Path::new(current_file_basename)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(current_file_basename)
+            .to_lowercase();
+
+        // Walk RVA entries in ascending order from start_rva.
+        // Skip entries in other files or still on the same source line.
+        self.rva_to_line
+            .range(start_rva..)
+            .find(|(_, (file, line))| {
+                let entry_basename = Path::new(file.as_str())
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(file.as_str())
+                    .to_lowercase();
+                // Require a strictly higher line number: LLVM sometimes emits
+                // inlined code from earlier lines at higher addresses, so
+                // accepting any different line would pick a backward reference.
+                entry_basename == basename_lower && *line > current_line
+            })
+            .map(|(rva, _)| module_base + u64::from(*rva))
     }
 }
 
