@@ -8,22 +8,22 @@ use debug_session_view::{DebugSessionState, DebugSessionView, ToolbarAction};
 use rfd::FileDialog;
 use egui::Id;
 use tokio::runtime::Runtime;
-use tracing::instrument;
-use lldb_bridge::LldbDebugHandle;
-use protocol::tools::execution::{ExecutionEvent, ExecutionEventKind};
+use runtime_core::backend::DebugBackend;
+use runtime_core::event::{ExecutionEvent, ExecutionEventKind};
 use runtime_core::breakpoint::BreakpointKind;
-use runtime_core::session::{DebugTarget, SessionState};
+use runtime_core::session::DebugTarget;
 use serde_json::Value as JsonValue;
 
 use crate::address_bar::{AddressBar, AddressBarState};
 use crate::file_tree::FileTree;
+use crate::session_config::{SavedBreakpoint, SessionConfig};
 use crate::source_view::SourceView;
 use crate::toolbar::{ChordState, Toolbar};
 
 /// Main application state.
 pub struct VisualDebuggerApp {
     pub view: DebugSessionView,
-    pub debug_handle: Arc<std::sync::Mutex<Option<Arc<LldbDebugHandle>>>>,
+    pub debug_handle: Arc<std::sync::Mutex<Option<Arc<dyn DebugBackend>>>>,
     pub source_view: SourceView,
     pub file_tree: FileTree,
     pub address_bar: AddressBarState,
@@ -36,14 +36,40 @@ pub struct VisualDebuggerApp {
 impl VisualDebuggerApp {
     pub fn new(
         view: DebugSessionView,
-        debug_handle: Arc<std::sync::Mutex<Option<Arc<LldbDebugHandle>>>>,
+        debug_handle: Arc<std::sync::Mutex<Option<Arc<dyn DebugBackend>>>>,
         runtime: Arc<Runtime>,
     ) -> Self {
+        let cfg = SessionConfig::load();
+
+        // Restore breakpoints and active file into shared state.
+        runtime.block_on(async {
+            let mut state = view.state.write().await;
+            for bp in &cfg.breakpoints {
+                state.add_breakpoint(debug_session_view::BreakpointEntry {
+                    file: bp.file.clone(),
+                    line: bp.line,
+                    resolved: false,
+                    backend_id: None,
+                });
+            }
+            if let Some(f) = &cfg.open_file {
+                if f.exists() {
+                    state.active_file = Some(f.clone());
+                }
+            }
+        });
+
+        // Restore open directory.
+        let mut file_tree = FileTree::default();
+        if let Some(dir) = cfg.open_directory.filter(|d| d.exists()) {
+            file_tree.change_root(dir);
+        }
+
         Self {
             view,
             debug_handle,
             source_view: SourceView::default(),
-            file_tree: FileTree::default(),
+            file_tree,
             address_bar: AddressBarState::default(),
             chord_state: ChordState::default(),
             toolbar: Toolbar::new(),
@@ -53,11 +79,9 @@ impl VisualDebuggerApp {
     }
 
     /// Process toolbar actions and send debug commands.
-    #[instrument(skip(self, ctx))]
     fn process_actions(&mut self, ctx: &egui::Context, actions: Vec<ToolbarAction>) {
-        tracing::info!(count = actions.len(), "process_actions called");
         for action in actions {
-            tracing::info!(?action, "processing action");
+            tracing::info!(?action, "action triggered");
             // Record press in shared state so UI animates
             self.runtime.block_on(async {
                 self.view.publish_action(action).await;
@@ -172,52 +196,11 @@ impl VisualDebuggerApp {
                                                 return;
                                             }
 
-                                            match LldbDebugHandle::spawn() {
+                                            match lldb_native::LldbNativeHandle::spawn() {
                                                 Ok(handle) => {
-                                                    let handle = Arc::new(handle);
+                                                    let handle: Arc<dyn DebugBackend> = Arc::new(handle);
                                                     *debug_handle.lock().unwrap() =
                                                         Some(Arc::clone(&handle));
-
-                                                    // Sync all existing UI breakpoints BEFORE launch
-                                                    // so codelldb can resolve them during configurationDone.
-                                                    let ui_bps = {
-                                                        let state = view.state.read().await;
-                                                        state.breakpoints.clone()
-                                                    };
-                                                    tracing::info!(count = ui_bps.len(), "syncing existing UI breakpoints before launch");
-                                                    for bp in ui_bps {
-                                                        let kind = BreakpointKind::SourceLine {
-                                                            file: bp.file.clone(),
-                                                            line: bp.line,
-                                                        };
-                                                        match handle.set_breakpoint(kind, None).await {
-                                                            Ok(bk) => {
-                                                                let mut guard = view.state.write().await;
-                                                                if let Some(entry) = guard.breakpoints.iter_mut().find(|b| b.file == bp.file && b.line == bp.line) {
-                                                                    entry.resolved = true;
-                                                                    entry.backend_id = Some(bk.id);
-                                                                }
-                                                                guard.log_terminal(format!(
-                                                                    "[bp] Auto-set {}:{} @ 0x{:x} (id={})",
-                                                                    bp.file.display(),
-                                                                    bp.line,
-                                                                    bk.locations.first().map(|l| l.address).unwrap_or(0),
-                                                                    bk.id
-                                                                ));
-                                                                let _ = view.notifier.send(*view.notifier.borrow() + 1);
-                                                            }
-                                                            Err(e) => {
-                                                                let mut guard = view.state.write().await;
-                                                                guard.log_terminal(format!(
-                                                                    "[bp] Failed to auto-set {}:{} — {:?}",
-                                                                    bp.file.display(),
-                                                                    bp.line,
-                                                                    e
-                                                                ));
-                                                                let _ = view.notifier.send(*view.notifier.borrow() + 1);
-                                                            }
-                                                        }
-                                                    }
 
                                                     let target = DebugTarget {
                                                         executable: exe_path.clone(),
@@ -230,13 +213,53 @@ impl VisualDebuggerApp {
                                                             {
                                                                 let mut state = view.state.write().await;
                                                                 state.log_terminal(format!(
-                                                                    "[start] Launched PID {} — running until first breakpoint",
+                                                                    "[start] Launched PID {} — stopped at entry",
                                                                     pid
                                                                 ));
                                                                 let _ = view.notifier.send(*view.notifier.borrow() + 1);
                                                             }
 
-                                                            // Now continue so the process runs until it hits a breakpoint
+                                                            // Sync breakpoints AFTER launch so the LLDB target exists.
+                                                            let ui_bps = {
+                                                                let state = view.state.read().await;
+                                                                state.breakpoints.clone()
+                                                            };
+                                                            tracing::info!(count = ui_bps.len(), "syncing existing UI breakpoints after launch");
+                                                            for bp in ui_bps {
+                                                                let kind = BreakpointKind::SourceLine {
+                                                                    file: bp.file.clone(),
+                                                                    line: bp.line,
+                                                                };
+                                                                match handle.set_breakpoint(kind, None).await {
+                                                                    Ok(bk) => {
+                                                                        let mut guard = view.state.write().await;
+                                                                        if let Some(entry) = guard.breakpoints.iter_mut().find(|b| b.file == bp.file && b.line == bp.line) {
+                                                                            entry.resolved = true;
+                                                                            entry.backend_id = Some(bk.id);
+                                                                        }
+                                                                        guard.log_terminal(format!(
+                                                                            "[bp] Auto-set {}:{} @ 0x{:x} (id={})",
+                                                                            bp.file.display(),
+                                                                            bp.line,
+                                                                            bk.locations.first().map(|l| l.address).unwrap_or(0),
+                                                                            bk.id
+                                                                        ));
+                                                                        let _ = view.notifier.send(*view.notifier.borrow() + 1);
+                                                                    }
+                                                                    Err(e) => {
+                                                                        let mut guard = view.state.write().await;
+                                                                        guard.log_terminal(format!(
+                                                                            "[bp] Failed to auto-set {}:{} — {:?}",
+                                                                            bp.file.display(),
+                                                                            bp.line,
+                                                                            e
+                                                                        ));
+                                                                        let _ = view.notifier.send(*view.notifier.borrow() + 1);
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // Continue to run until the first breakpoint.
                                                             tracing::info!("auto-continuing after setting breakpoints");
                                                             match handle.continue_execution().await {
                                                                 Ok(event) => {
@@ -401,17 +424,6 @@ async fn resolve_rust_binary(cargo_toml: &std::path::Path, _rs_file: &std::path:
     None
 }
 
-/// Map a runtime session state to the UI-facing state.
-fn map_session_state(state: &SessionState) -> DebugSessionState {
-    match state {
-        SessionState::Idle | SessionState::Launching => DebugSessionState::Idle,
-        SessionState::Running | SessionState::Stepping => DebugSessionState::Running,
-        SessionState::Paused(_) => DebugSessionState::Paused,
-        SessionState::Terminated(_) => DebugSessionState::Terminated,
-        SessionState::Error(_) => DebugSessionState::Idle,
-    }
-}
-
 /// Update UI state from an execution event returned by the debug thread.
 fn apply_execution_event(state: &mut debug_session_view::DebugUIState, event: &ExecutionEvent) {
     match event.kind {
@@ -438,23 +450,24 @@ impl eframe::App for VisualDebuggerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Read latest state from shared bus
         let state = self.view.latest_blocking();
-        tracing::info!(active_file = ?state.active_file, active_line = ?state.active_line, session_state = ?state.session_state, "UPDATE frame");
         self.error_banner = state.error_banner.clone();
 
         // Update source view when file changes
         self.source_view.build_lines(&state);
-        if let Some(line) = state.active_line {
-            tracing::info!(line, "scrolling to active line");
+        if state.active_line.is_some() {
             self.source_view.scroll_to_active(600.0, 20.0);
         }
 
         // Update address bar when file changes
         if let Some(ref path) = state.active_file {
-            tracing::info!(path = %path.display(), "active file changed");
+            let path_str = path.to_string_lossy();
+            if self.address_bar.display_path.as_str() != path_str.as_ref() {
+                tracing::info!(path = %path.display(), "active file changed");
+            }
             self.address_bar.set_path(path);
         }
 
-        // Initialise file tree root on first frame
+        // Initialise file tree root on first frame only if not already restored from session.
         if self.file_tree.root_path.is_none() {
             let root_dir = std::env::current_dir().ok()
                 .unwrap_or_else(|| PathBuf::from("."));
@@ -463,7 +476,6 @@ impl eframe::App for VisualDebuggerApp {
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             let has_handle = self.debug_handle.lock().unwrap().is_some();
-            tracing::info!(has_handle, "toolbar render");
             if !has_handle {
                 ui.horizontal(|ui| {
                     ui.colored_label(egui::Color32::YELLOW, "⚠ No debug binary attached");
@@ -477,7 +489,6 @@ impl eframe::App for VisualDebuggerApp {
             let click_actions = self.toolbar.render(ui, &state);
             let mut all_actions = keyboard_actions;
             all_actions.extend(click_actions);
-            tracing::info!(actions = ?all_actions, "dispatching actions");
             self.process_actions(ctx, all_actions);
         });
 
@@ -493,9 +504,15 @@ impl eframe::App for VisualDebuggerApp {
                 let view = self.view.clone();
                 self.runtime.block_on(async {
                     let mut guard = view.state.write().await;
-                    guard.active_file = Some(selected);
+                    guard.active_file = Some(selected.clone());
                     let _ = view.notifier.send(*view.notifier.borrow() + 1);
                 });
+                // Persist session to disk.
+                SessionConfig::save(
+                    &state.breakpoints.iter().map(|b| SavedBreakpoint { file: b.file.clone(), line: b.line }).collect::<Vec<_>>(),
+                    self.file_tree.root_path.as_ref(),
+                    Some(&selected),
+                );
             }
         });
 
@@ -583,6 +600,13 @@ impl eframe::App for VisualDebuggerApp {
                     let _ = view.notifier.send(*view.notifier.borrow() + 1);
                 });
 
+                // Persist session to disk.
+                SessionConfig::save(
+                    &state_mut.breakpoints.iter().map(|b| SavedBreakpoint { file: b.file.clone(), line: b.line }).collect::<Vec<_>>(),
+                    self.file_tree.root_path.as_ref(),
+                    state_mut.active_file.as_ref(),
+                );
+
                 // Sync with backend if we have a debug handle
                 let has_handle = self.debug_handle.lock().unwrap().is_some();
                 tracing::info!(has_handle, "about to sync breakpoints with backend");
@@ -660,7 +684,13 @@ impl eframe::App for VisualDebuggerApp {
                 .set_title("Selecionar pasta")
                 .pick_folder()
             {
-                self.file_tree.change_root(path);
+                self.file_tree.change_root(path.clone());
+                // Persist session to disk.
+                SessionConfig::save(
+                    &state.breakpoints.iter().map(|b| SavedBreakpoint { file: b.file.clone(), line: b.line }).collect::<Vec<_>>(),
+                    Some(&path),
+                    state.active_file.as_ref(),
+                );
                 ctx.request_repaint();
             }
         }

@@ -9,19 +9,17 @@ mod ui_server;
 
 pub use ui_server::run_with_store;
 
+use std::sync::Arc;
 use debug_session_view::DebugSessionView;
-use lldb_bridge::LldbDebugHandle;
+use runtime_core::backend::DebugBackend;
 use std::path::PathBuf;
 
 /// Run the debug MCP server in-process with a shared [`DebugSessionView`].
-///
-/// Spawns the same JSON-RPC dispatch loop as the standalone `mcp-server` binary,
-/// but shares UI state so that AI-driven actions animate the visual debugger.
 pub async fn run_with_view(
-    handle: LldbDebugHandle,
+    backend: Arc<dyn DebugBackend>,
     executable: PathBuf,
     args: Vec<String>,
     view: DebugSessionView,
 ) -> anyhow::Result<()> {
-    server::run(handle, executable, args, "stdio", 0, Some(view)).await
+    server::run(backend, executable, args, "stdio", 0, Some(view)).await
 }

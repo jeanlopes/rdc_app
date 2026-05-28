@@ -1,25 +1,26 @@
-use lldb_bridge::LldbDebugHandle as LLDBHandle;
-use protocol::tools::session::{LaunchInput, LaunchOutput, SessionStateOutput};
+use std::sync::Arc;
+
+use runtime_core::backend::DebugBackend;
 use runtime_core::error::DebuggerError;
 use runtime_core::session::DebugTarget;
+use protocol::tools::session::{LaunchInput, LaunchOutput, SessionStateOutput};
 use tracing::{error, info, instrument};
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use debug_session_view::DebugSessionView;
 
 /// Shared state accessible from all handlers.
 pub struct SessionContext {
-    pub handle: LLDBHandle,
+    pub backend: Arc<dyn DebugBackend>,
     pub session_id: Arc<Mutex<Option<String>>>,
     pub pid: Arc<Mutex<Option<u32>>>,
     pub view: Option<DebugSessionView>,
 }
 
 impl SessionContext {
-    pub fn new(handle: LLDBHandle, view: Option<DebugSessionView>) -> Self {
+    pub fn new(backend: Arc<dyn DebugBackend>, view: Option<DebugSessionView>) -> Self {
         Self {
-            handle,
+            backend,
             session_id: Arc::new(Mutex::new(None)),
             pid: Arc::new(Mutex::new(None)),
             view,
@@ -45,7 +46,7 @@ pub async fn handle_launch_process(
         working_dir: input.working_dir,
     };
 
-    let (pid, state) = ctx.handle.launch_process(target).await
+    let (pid, state) = ctx.backend.launch_process(target).await
         .map_err(|e| {
             error!(error = %e, "launch_process failed");
             e
@@ -64,7 +65,7 @@ pub async fn handle_launch_process(
 pub async fn handle_get_session_state(
     ctx: &SessionContext,
 ) -> Result<SessionStateOutput, DebuggerError> {
-    let state = ctx.handle.get_state().await?;
+    let state = ctx.backend.get_state().await?;
     let session_id = ctx.session_id.lock().await
         .clone()
         .unwrap_or_else(|| "none".to_string());

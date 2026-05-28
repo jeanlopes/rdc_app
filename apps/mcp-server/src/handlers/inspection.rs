@@ -1,14 +1,14 @@
-use lldb_bridge::LldbDebugHandle as LLDBHandle;
+use runtime_core::backend::DebugBackend;
+use runtime_core::error::DebuggerError;
 use protocol::tools::inspection::{
     EvalInput, EvalOutput, ReadLocalsInput, ReadStackInput,
     StackOutput, ThreadListOutput, VariableListOutput,
 };
-use runtime_core::error::DebuggerError;
 use tracing::instrument;
 
 #[instrument(skip(handle, input))]
 pub async fn handle_read_locals(
-    handle: &LLDBHandle,
+    handle: &dyn DebugBackend,
     input: ReadLocalsInput,
 ) -> Result<VariableListOutput, DebuggerError> {
     let variables = handle
@@ -22,7 +22,7 @@ pub async fn handle_read_locals(
 
 #[instrument(skip(handle, input))]
 pub async fn handle_read_stack(
-    handle: &LLDBHandle,
+    handle: &dyn DebugBackend,
     input: ReadStackInput,
 ) -> Result<StackOutput, DebuggerError> {
     let frames = handle.read_stack(input.thread_id, input.max_frames).await?;
@@ -32,7 +32,7 @@ pub async fn handle_read_stack(
 
 #[instrument(skip(handle, input), fields(expr = %input.expression))]
 pub async fn handle_evaluate_expression(
-    handle: &LLDBHandle,
+    handle: &dyn DebugBackend,
     input: EvalInput,
 ) -> Result<EvalOutput, DebuggerError> {
     let result = handle
@@ -42,7 +42,7 @@ pub async fn handle_evaluate_expression(
 }
 
 #[instrument(skip(handle))]
-pub async fn handle_list_threads(handle: &LLDBHandle) -> Result<ThreadListOutput, DebuggerError> {
+pub async fn handle_list_threads(handle: &dyn DebugBackend) -> Result<ThreadListOutput, DebuggerError> {
     let threads = handle.list_threads().await?;
     Ok(ThreadListOutput {
         threads,

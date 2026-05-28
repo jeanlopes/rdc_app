@@ -1,14 +1,14 @@
-use lldb_bridge::LldbDebugHandle as LLDBHandle;
+use runtime_core::backend::DebugBackend;
+use runtime_core::error::DebuggerError;
 use protocol::tools::breakpoints::{
     BreakpointOutput, ListBreakpointsOutput, RemoveBreakpointInput, SetBreakpointInput,
 };
-use runtime_core::error::DebuggerError;
 use tracing::{info, instrument};
 use debug_session_view::ToolbarAction;
 
 #[instrument(skip(handle, input))]
 pub async fn handle_set_breakpoint(
-    handle: &LLDBHandle,
+    handle: &dyn DebugBackend,
     input: SetBreakpointInput,
     view: &Option<debug_session_view::DebugSessionView>,
 ) -> Result<BreakpointOutput, DebuggerError> {
@@ -23,7 +23,7 @@ pub async fn handle_set_breakpoint(
 
 #[instrument(skip(handle, input))]
 pub async fn handle_remove_breakpoint(
-    handle: &LLDBHandle,
+    handle: &dyn DebugBackend,
     input: RemoveBreakpointInput,
     view: &Option<debug_session_view::DebugSessionView>,
 ) -> Result<(), DebuggerError> {
@@ -37,7 +37,7 @@ pub async fn handle_remove_breakpoint(
 
 #[instrument(skip(handle))]
 pub async fn handle_list_breakpoints(
-    handle: &LLDBHandle,
+    handle: &dyn DebugBackend,
 ) -> Result<ListBreakpointsOutput, DebuggerError> {
     let breakpoints = handle.list_breakpoints().await?;
     Ok(ListBreakpointsOutput { breakpoints })
