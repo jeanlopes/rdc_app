@@ -1,0 +1,17 @@
+[package]
+name = "lldb-native"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "In-process LLDB 19 debug backend via lldb-safe FFI"
+
+[dependencies]
+lldb-safe = { path = "../../../lldb-sys/crates/lldb-safe" }
+runtime-core.workspace = true
+protocol.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+tracing.workspace = true
+thiserror.workspace = true
+async-trait = "0.1"
+pdb = "0.8"

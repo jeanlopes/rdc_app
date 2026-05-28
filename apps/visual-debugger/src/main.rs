@@ -10,6 +10,7 @@ use tracing::info;
 mod app;
 mod address_bar;
 mod file_tree;
+mod session_config;
 mod source_view;
 mod syntax;
 mod toolbar;
@@ -26,25 +27,22 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    // Show our logs at INFO; silence noisy GPU/render crates.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(
+                "info,wgpu_core=off,wgpu_hal=off,wgpu=off,naga=off,eframe=off,egui=off",
+            )
+        });
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let args = Args::parse();
-
-    // Auto-detect fallback binary if not provided
-    let executable = args.executable.or_else(|| {
-        let fallback = PathBuf::from("target/debug/debug-target-example.exe");
-        if fallback.exists() {
-            info!("Auto-detected fallback binary: {:?}", fallback);
-            Some(fallback)
-        } else {
-            None
-        }
-    });
+    let executable = args.executable;
 
     if let Some(ref exec) = executable {
         info!("Starting visual-debugger with executable: {:?}", exec);
     } else {
-        info!("Starting visual-debugger without a debug binary");
+        info!("Starting visual-debugger — no executable; use file tree + Start to debug");
     }
 
     let runtime = Arc::new(
@@ -67,15 +65,16 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let debug_handle = Arc::new(std::sync::Mutex::new(
-        if executable.is_some() {
-            lldb_bridge::LldbDebugHandle::spawn()
-                .ok()
-                .map(Arc::new)
-        } else {
-            None
-        }
-    ));
+    let debug_handle: Arc<std::sync::Mutex<Option<Arc<dyn runtime_core::backend::DebugBackend>>>> =
+        Arc::new(std::sync::Mutex::new(
+            if executable.is_some() {
+                lldb_native::LldbNativeHandle::spawn()
+                    .ok()
+                    .map(|h| -> Arc<dyn runtime_core::backend::DebugBackend> { Arc::new(h) })
+            } else {
+                None
+            }
+        ));
 
     {
         let guard = debug_handle.lock().unwrap();
@@ -112,7 +111,7 @@ fn main() -> anyhow::Result<()> {
                         .build()
                         .expect("mcp tokio runtime")
                         .block_on(mcp_server::run_with_view(
-                            (*mcp_handle).clone(),
+                            mcp_handle,
                             mcp_executable,
                             vec![],
                             mcp_view,

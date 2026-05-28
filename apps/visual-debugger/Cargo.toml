@@ -29,7 +29,8 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 # internal crates
 debug-session-view = { workspace = true }
-lldb-bridge = { workspace = true }
+lldb-native = { path = "../../crates/lldb-native" }
+win-debug-bridge = { workspace = true }
 runtime-core = { workspace = true }
 protocol = { workspace = true }
 mcp-server = { workspace = true }

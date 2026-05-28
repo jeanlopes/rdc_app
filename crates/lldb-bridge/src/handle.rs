@@ -20,6 +20,7 @@ pub struct LldbDebugHandle {
 
 impl LldbDebugHandle {
     /// Spawn codelldb, perform DAP handshake, and return a handle.
+    #[deprecated(since = "0.1.0", note = "use lldb-native::LldbNativeHandle instead")]
     pub fn spawn() -> Result<Self, DebuggerError> {
         let codelldb_path = find_codelldb().map_err(|e| DebuggerError::DebuggerError(e.to_string()))?;
         let (transport, event_rx) =

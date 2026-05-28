@@ -218,3 +218,52 @@ async fn run_loop(backend: crate::windows_backend::WindowsDebugBackend, mut rx: 
     }
     tracing::info!("win-debug-worker loop exited");
 }
+
+#[async_trait::async_trait]
+impl runtime_core::backend::DebugBackend for WindowsDebugHandle {
+    async fn launch_process(&self, target: DebugTarget) -> Result<(u32, SessionState), runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::launch_process(self, target).await
+    }
+    async fn attach_to_pid(&self, _pid: u64) -> Result<(u64, SessionState), runtime_core::error::DebuggerError> {
+        Err(runtime_core::error::DebuggerError::DebuggerError("attach_to_pid not supported by win-debug-bridge".into()))
+    }
+    async fn get_state(&self) -> Result<SessionState, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::get_state(self).await
+    }
+    async fn set_breakpoint(&self, kind: BreakpointKind, condition: Option<String>) -> Result<runtime_core::breakpoint::Breakpoint, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::set_breakpoint(self, kind, condition).await
+    }
+    async fn remove_breakpoint(&self, id: BreakpointId) -> Result<(), runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::remove_breakpoint(self, id).await
+    }
+    async fn list_breakpoints(&self) -> Result<Vec<runtime_core::breakpoint::Breakpoint>, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::list_breakpoints(self).await
+    }
+    async fn continue_execution(&self) -> Result<ExecutionEvent, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::continue_execution(self).await
+    }
+    async fn pause_execution(&self) -> Result<ExecutionEvent, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::pause_execution(self).await
+    }
+    async fn step_over(&self, thread_id: Option<ThreadId>) -> Result<ExecutionEvent, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::step_over(self, thread_id).await
+    }
+    async fn step_into(&self, thread_id: Option<ThreadId>) -> Result<ExecutionEvent, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::step_into(self, thread_id).await
+    }
+    async fn step_out(&self, thread_id: Option<ThreadId>) -> Result<ExecutionEvent, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::step_out(self, thread_id).await
+    }
+    async fn read_locals(&self, thread_id: Option<ThreadId>, frame_index: u32, probe_context: Option<String>, max_depth: u32) -> Result<Vec<runtime_core::variable::Variable>, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::read_locals(self, thread_id, frame_index, probe_context, max_depth).await
+    }
+    async fn read_stack(&self, thread_id: Option<ThreadId>, max_frames: u32) -> Result<Vec<runtime_core::process::StackFrame>, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::read_stack(self, thread_id, max_frames).await
+    }
+    async fn evaluate_expression(&self, expression: String, thread_id: Option<ThreadId>, frame_index: u32) -> Result<runtime_core::variable::EvalResult, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::evaluate_expression(self, expression, thread_id, frame_index).await
+    }
+    async fn list_threads(&self) -> Result<Vec<runtime_core::process::ThreadInfo>, runtime_core::error::DebuggerError> {
+        WindowsDebugHandle::list_threads(self).await
+    }
+}

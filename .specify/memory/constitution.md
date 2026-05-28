@@ -1,33 +1,38 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.0.0 → 2.0.0 (MAJOR)
-Rationale for MAJOR bump: backward-incompatible removal of the entire LLDB/Python/PyO3
-debugger integration in favor of the Windows Debug API. The external dependency on LLDB
-and Python is eliminated; the `lldb-bridge` crate is replaced by `win-debug-bridge`.
+Version change: 2.0.0 → 3.0.0 (MAJOR)
+Rationale for MAJOR bump: re-introduction of LLDB as a debugger integration option via the
+`lldb-sys` / `lldb-safe` crates (native Rust FFI bindings to liblldb.dll), replacing the
+DAP+codelldb external-process approach. The `crates/win-debug-bridge` (Win32 Debug API) remains
+as an alternative backend. The external-process boundary that triggered antivirus interference is
+eliminated by both options; the choice of backend is now configuration-level.
+
+Motivation for reverting the v2.0.0 "no LLDB" constraint:
+  - The Win32 Debug API backend (`win-debug-bridge`) lacks LLDB's symbol-resolution depth (DWARF,
+    type system, expression evaluation) which limits future autonomous-agent capabilities.
+  - The v2.0.0 prohibition was aimed at the external codelldb *process* (DAP adapter), not at
+    linking liblldb.dll in-process. lldb-sys/lldb-safe links the DLL directly — no external
+    process is spawned, so antivirus behavioural hooks are not triggered.
+  - The deployment requirement (LLVM installation) is accepted and must be explicitly documented.
 
 Modified principles:
-  - I. Runtime Intelligence: rationale updated (LLDB CLI removed as reference comparator)
-  - III. MCP as the AI-Debugger Contract: crate reference lldb-bridge → win-debug-bridge
-  - VI. Rust Safety First: extended to explicitly cover Windows API unsafe blocks
+  - VI. Rust Safety First: LLDB via lldb-sys is explicitly allowed; system LLVM install
+    is accepted as a documented build prerequisite; Python and PyO3 remain forbidden.
 
 Modified sections:
-  - Technology Stack & Architecture Constraints: complete rewrite
-    * Removed: LLDB, PyO3, Python dependency
-    * Added: Windows Debug API (windows-rs crate), PDB symbol parsing (pdb crate)
-    * Renamed crate: lldb-bridge → win-debug-bridge
-
-Added sections: none
-Removed sections: none
+  - Technology Stack & Architecture Constraints:
+    * Debugger integration: dual-backend — lldb-sys (primary) + win-debug-bridge (alternative)
+    * Build prerequisite added: LLVM 19 system installation (LLDB_SYS_PREFIX env var)
+    * crates/lldb-native added to workspace layout (replaces crates/lldb-bridge)
 
 Templates requiring updates:
-  - .specify/templates/plan-template.md  ✅ aligned
-  - .specify/templates/spec-template.md  ✅ aligned
-  - .specify/templates/tasks-template.md ✅ aligned
-  - README.md                            ⚠ pending — update debugger integration section
+  - .specify/templates/plan-template.md  ⚠ pending
+  - .specify/templates/spec-template.md  ⚠ pending
+  - README.md                            ⚠ pending — document LLVM install prerequisite
 
 Follow-up TODOs:
-  - TODO(README): Update README.md debugger section to remove LLDB/Python references
+  - TODO(README): Document LLVM 19 installation as a build prerequisite
   - TODO(MAINTAINERS): Define initial maintainer list for governance amendment approval
 -->
 
@@ -104,22 +109,31 @@ in observable runtime evidence makes the agent auditable and its behavior improv
 ### VI. Rust Safety First — No External Runtime Dependencies
 
 All production code MUST be written in Rust (stable toolchain). The debugger integration MUST use
-only Rust crates — no external runtimes, no system-installed tools, no language interpreters.
+only Rust crates — no external language runtimes and no language interpreters (Python, PyO3, etc.).
 `unsafe` blocks are FORBIDDEN unless all three conditions are met:
 1. An inline comment provides a complete safety proof at the `unsafe` block
 2. A GitHub issue tracks the unsafe usage with a link in the comment
 3. A safe alternative was considered and rejected with a written rationale in the same comment
 
-`unsafe` is expected and accepted in `crates/win-debug-bridge` for Windows API calls
-(`ReadProcessMemory`, `WriteProcessMemory`, `CreateProcess`, etc.) — each call site MUST carry
-the three-condition proof above.
+`unsafe` is expected and accepted in:
+- `crates/win-debug-bridge`: Windows API calls (`ReadProcessMemory`, `WriteProcessMemory`,
+  `CreateProcess`, etc.)
+- `crates/lldb-native`: LLDB C API FFI calls via `lldb-sys` / `lldb-safe`
+
+Each `unsafe` call site in both crates MUST carry the three-condition proof above.
+
+**LLDB via lldb-sys is explicitly permitted** as a debugger integration backend, subject to:
+- Linking occurs in-process via `liblldb.dll` — no external debugger process may be spawned.
+- LLVM 19 must be installed on the development/build machine and `LLDB_SYS_PREFIX` set.
+  This is an accepted and documented build prerequisite, not a runtime dependency.
+- Python, PyO3, and any Python-based LLDB scripting bridges remain FORBIDDEN.
 
 Async code MUST use Tokio as the sole async runtime. No competing runtimes (async-std, smol) may
 be introduced. The MSRV MUST be declared in `workspace.package` in the root `Cargo.toml`.
 
-**Rationale**: Requiring an external Python installation or LLDB binaries creates invisible
-deployment failures. Pure-Rust crate dependencies declared in `Cargo.toml` are the only
-acceptable integration boundary — `cargo build` is the entire setup story.
+**Rationale**: Python/PyO3 and external debugger *processes* create invisible deployment failures
+and antivirus surface area. Pure-Rust crates plus an explicitly documented LLVM build prerequisite
+are acceptable; spawning a foreign process (codelldb.exe, lldb.exe) is not.
 
 ### VII. Open Platform Foundation
 
@@ -137,9 +151,13 @@ depend on stable, documented contracts. Undocumented or silent breakage destroys
 - **Primary language**: Rust (stable toolchain; MSRV declared in workspace `Cargo.toml`)
 - **Target platform**: Windows 10/11 (x86-64). No Linux or macOS support is planned or claimed.
 - **UI framework**: egui via `crates/egui-introspection` and `apps/desktop-ui`
-- **Debugger integration**: Windows Debug API via the `windows` crate (`windows-rs`).
-  No LLDB, no GDB, no external debugger binary required.
-  Symbol resolution via the `pdb` crate (parses `.pdb` files produced by the Rust toolchain).
+- **Debugger integration**: Dual-backend architecture.
+  - **Primary**: LLDB 19 via `lldb-sys` / `lldb-safe` crates, linking `liblldb.dll` in-process
+    (`crates/lldb-native`). Build prerequisite: LLVM 19 installed, `LLDB_SYS_PREFIX` set.
+  - **Alternative**: Windows Debug API via `windows-rs` (`crates/win-debug-bridge`), zero system
+    dependencies, symbol resolution via the `pdb` crate.
+  - **Forbidden**: External debugger processes (codelldb.exe, lldb.exe, gdb.exe), Python/PyO3
+    scripting bridges, any GDB-based backend.
 - **AI protocol**: MCP (Model Context Protocol) via `crates/protocol` and `apps/mcp-server`
 - **Async runtime**: Tokio only — no mixing with async-std or smol
 - **Serialization**: `serde` with `serde_json` or `postcard` for wire formats; no ad-hoc
@@ -156,7 +174,8 @@ depend on stable, documented contracts. Undocumented or silent breakage destroys
 
   crates/
     runtime-core/         # core abstractions: session, entities, state machine
-    win-debug-bridge/     # Windows Debug API integration (windows-rs + pdb)
+    lldb-native/          # LLDB 19 in-process backend (lldb-sys + lldb-safe FFI)
+    win-debug-bridge/     # Windows Debug API integration (windows-rs + pdb) — alternative backend
     event-stream/         # runtime event capture and dispatch
     semantic-runtime/     # semantic graph over runtime state
     egui-introspection/   # UI introspection widgets
@@ -211,4 +230,4 @@ an approved exception documented in this Governance section.
 truth for project governance. In any conflict between this document and other guidance files, this
 constitution prevails.
 
-**Version**: 2.0.0 | **Ratified**: 2026-05-20 | **Last Amended**: 2026-05-20
+**Version**: 3.0.0 | **Ratified**: 2026-05-20 | **Last Amended**: 2026-05-27

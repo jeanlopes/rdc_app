@@ -1,12 +1,12 @@
-use lldb_bridge::LldbDebugHandle as LLDBHandle;
-use protocol::tools::execution::ExecutionEvent;
-use protocol::tools::execution::{ExecutionEventKind, StepInput};
+use runtime_core::backend::DebugBackend;
 use runtime_core::error::DebuggerError;
+use runtime_core::event::ExecutionEvent;
+use protocol::tools::execution::{ExecutionEventKind, StepInput};
 use tracing::{info, instrument, warn};
 use debug_session_view::ToolbarAction;
 
 #[instrument(skip(handle))]
-pub async fn handle_continue_execution(handle: &LLDBHandle, view: &Option<debug_session_view::DebugSessionView>) -> Result<ExecutionEvent, DebuggerError> {
+pub async fn handle_continue_execution(handle: &dyn DebugBackend, view: &Option<debug_session_view::DebugSessionView>) -> Result<ExecutionEvent, DebuggerError> {
     let event = handle.continue_execution().await?;
     if let Some(v) = view {
         v.publish_action(ToolbarAction::Continue).await;
@@ -25,7 +25,7 @@ pub async fn handle_continue_execution(handle: &LLDBHandle, view: &Option<debug_
 }
 
 #[instrument(skip(handle))]
-pub async fn handle_pause_execution(handle: &LLDBHandle, view: &Option<debug_session_view::DebugSessionView>) -> Result<ExecutionEvent, DebuggerError> {
+pub async fn handle_pause_execution(handle: &dyn DebugBackend, view: &Option<debug_session_view::DebugSessionView>) -> Result<ExecutionEvent, DebuggerError> {
     let event = handle.pause_execution().await?;
     if let Some(v) = view {
         v.publish_action(ToolbarAction::BreakAll).await;
@@ -34,7 +34,7 @@ pub async fn handle_pause_execution(handle: &LLDBHandle, view: &Option<debug_ses
 }
 
 #[instrument(skip(handle))]
-pub async fn handle_step_over(handle: &LLDBHandle, input: StepInput, view: &Option<debug_session_view::DebugSessionView>) -> Result<ExecutionEvent, DebuggerError> {
+pub async fn handle_step_over(handle: &dyn DebugBackend, input: StepInput, view: &Option<debug_session_view::DebugSessionView>) -> Result<ExecutionEvent, DebuggerError> {
     let event = handle.step_over(input.thread_id).await?;
     if let Some(v) = view {
         v.publish_action(ToolbarAction::StepOver).await;
@@ -44,7 +44,7 @@ pub async fn handle_step_over(handle: &LLDBHandle, input: StepInput, view: &Opti
 }
 
 #[instrument(skip(handle))]
-pub async fn handle_step_into(handle: &LLDBHandle, input: StepInput, view: &Option<debug_session_view::DebugSessionView>) -> Result<ExecutionEvent, DebuggerError> {
+pub async fn handle_step_into(handle: &dyn DebugBackend, input: StepInput, view: &Option<debug_session_view::DebugSessionView>) -> Result<ExecutionEvent, DebuggerError> {
     let event = handle.step_into(input.thread_id).await?;
     if let Some(v) = view {
         v.publish_action(ToolbarAction::StepInto).await;
@@ -53,7 +53,7 @@ pub async fn handle_step_into(handle: &LLDBHandle, input: StepInput, view: &Opti
 }
 
 #[instrument(skip(handle))]
-pub async fn handle_step_out(handle: &LLDBHandle, input: StepInput, view: &Option<debug_session_view::DebugSessionView>) -> Result<ExecutionEvent, DebuggerError> {
+pub async fn handle_step_out(handle: &dyn DebugBackend, input: StepInput, view: &Option<debug_session_view::DebugSessionView>) -> Result<ExecutionEvent, DebuggerError> {
     let event = handle.step_out(input.thread_id).await?;
     if let Some(v) = view {
         v.publish_action(ToolbarAction::StepOut).await;
